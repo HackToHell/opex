@@ -72,6 +72,10 @@ fmt:
 vet:
 	go vet ./...
 
+## lint: Run golangci-lint
+lint:
+	golangci-lint run ./...
+
 ## clean: Remove build artifacts
 clean:
 	rm -rf $(BUILD_DIR)

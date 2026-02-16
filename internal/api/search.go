@@ -112,11 +112,11 @@ func (h *SearchHandlers) Search(w http.ResponseWriter, r *http.Request) {
 	response.WriteJSON(w, http.StatusOK, resp)
 }
 
-func buildSearchResponse(spans []clickhouse.SpanRow, traceIDs []string, query string, spss int, minDurStr, maxDurStr string) *response.SearchResponse {
-	// Group spans by TraceId
+func buildSearchResponse(spans []clickhouse.SpanRow, traceIDs []string, _ string, spss int, minDurStr, maxDurStr string) *response.SearchResponse {
+	// Group spans by TraceID
 	traceSpans := make(map[string][]clickhouse.SpanRow)
 	for _, s := range spans {
-		traceSpans[s.TraceId] = append(traceSpans[s.TraceId], s)
+		traceSpans[s.TraceID] = append(traceSpans[s.TraceID], s)
 	}
 
 	// Parse duration filters
@@ -163,7 +163,7 @@ func buildSearchResponse(spans []clickhouse.SpanRow, traceIDs []string, query st
 
 func buildTraceMetadata(spans []clickhouse.SpanRow, spss int) response.TraceSearchMetadata {
 	meta := response.TraceSearchMetadata{
-		TraceID: spans[0].TraceId,
+		TraceID: spans[0].TraceID,
 	}
 
 	var minTime, maxTime time.Time
@@ -171,7 +171,7 @@ func buildTraceMetadata(spans []clickhouse.SpanRow, spss int) response.TraceSear
 
 	for _, s := range spans {
 		// Track root span
-		if s.ParentSpanId == "" {
+		if s.ParentSpanID == "" {
 			meta.RootServiceName = s.ServiceName
 			meta.RootTraceName = s.SpanName
 		}
@@ -218,7 +218,7 @@ func buildTraceMetadata(spans []clickhouse.SpanRow, spss int) response.TraceSear
 		for i := 0; i < limit; i++ {
 			s := spans[i]
 			spanSetSpans = append(spanSetSpans, response.SpanSetSpan{
-				SpanID:            s.SpanId,
+				SpanID:            s.SpanID,
 				Name:              s.SpanName,
 				StartTimeUnixNano: fmt.Sprintf("%d", s.Timestamp.UnixNano()),
 				DurationNanos:     fmt.Sprintf("%d", s.Duration),
@@ -250,12 +250,13 @@ func parseTimeRange(startStr, endStr string) (time.Time, time.Time) {
 	}
 
 	// Default: last 1 hour
-	if start.IsZero() && end.IsZero() {
+	switch {
+	case start.IsZero() && end.IsZero():
 		end = time.Now()
 		start = end.Add(-1 * time.Hour)
-	} else if start.IsZero() {
+	case start.IsZero():
 		start = end.Add(-1 * time.Hour)
-	} else if end.IsZero() {
+	case end.IsZero():
 		end = time.Now()
 	}
 

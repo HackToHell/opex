@@ -208,7 +208,7 @@ func (h *TagHandlers) queryMapKeys(r *http.Request, mapCol string, start, end in
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tags []string
 	for rows.Next() {
@@ -252,7 +252,7 @@ func (h *TagHandlers) queryTagValues(r *http.Request, tagName string, start, end
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var values []string
 	for rows.Next() {
@@ -281,7 +281,7 @@ func (h *TagHandlers) queryDistinctColumn(r *http.Request, col string, start, en
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var values []string
 	for rows.Next() {

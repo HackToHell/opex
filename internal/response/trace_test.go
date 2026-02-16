@@ -165,9 +165,9 @@ func TestBuildTrace_SingleSpan(t *testing.T) {
 	spans := []clickhouse.SpanRow{
 		{
 			Timestamp:          ts,
-			TraceId:            "abc123",
-			SpanId:             "span1",
-			ParentSpanId:       "",
+			TraceID:            "abc123",
+			SpanID:             "span1",
+			ParentSpanID:       "",
 			SpanName:           "GET /api",
 			SpanKind:           "SPAN_KIND_SERVER",
 			ServiceName:        "frontend",
@@ -236,8 +236,8 @@ func TestBuildTrace_MultiService(t *testing.T) {
 	spans := []clickhouse.SpanRow{
 		{
 			Timestamp:          ts,
-			TraceId:            "trace1",
-			SpanId:             "span1",
+			TraceID:            "trace1",
+			SpanID:             "span1",
 			SpanName:           "request",
 			SpanKind:           "SPAN_KIND_SERVER",
 			ServiceName:        "frontend",
@@ -248,9 +248,9 @@ func TestBuildTrace_MultiService(t *testing.T) {
 		},
 		{
 			Timestamp:          ts.Add(100 * time.Millisecond),
-			TraceId:            "trace1",
-			SpanId:             "span2",
-			ParentSpanId:       "span1",
+			TraceID:            "trace1",
+			SpanID:             "span2",
+			ParentSpanID:       "span1",
 			SpanName:           "db.query",
 			SpanKind:           "SPAN_KIND_CLIENT",
 			ServiceName:        "backend",
@@ -283,8 +283,8 @@ func TestBuildTrace_WithEvents(t *testing.T) {
 	spans := []clickhouse.SpanRow{
 		{
 			Timestamp:          ts,
-			TraceId:            "trace1",
-			SpanId:             "span1",
+			TraceID:            "trace1",
+			SpanID:             "span1",
 			SpanName:           "request",
 			SpanKind:           "SPAN_KIND_SERVER",
 			ServiceName:        "svc",
@@ -316,8 +316,8 @@ func TestBuildTrace_WithLinks(t *testing.T) {
 	spans := []clickhouse.SpanRow{
 		{
 			Timestamp:          ts,
-			TraceId:            "trace1",
-			SpanId:             "span1",
+			TraceID:            "trace1",
+			SpanID:             "span1",
 			SpanName:           "request",
 			SpanKind:           "SPAN_KIND_SERVER",
 			ServiceName:        "svc",
@@ -325,8 +325,8 @@ func TestBuildTrace_WithLinks(t *testing.T) {
 			SpanAttributes:     map[string]string{},
 			Duration:           1000000,
 			StatusCode:         "STATUS_CODE_OK",
-			LinksTraceId:       []string{"linked-trace"},
-			LinksSpanId:        []string{"linked-span"},
+			LinksTraceID:       []string{"linked-trace"},
+			LinksSpanID:        []string{"linked-span"},
 			LinksAttributes:    []map[string]string{{"link.attr": "val"}},
 		},
 	}
@@ -350,8 +350,8 @@ func TestBuildTrace_ServiceNameInResourceAttrs(t *testing.T) {
 	spans := []clickhouse.SpanRow{
 		{
 			Timestamp:          ts,
-			TraceId:            "trace1",
-			SpanId:             "span1",
+			TraceID:            "trace1",
+			SpanID:             "span1",
 			SpanName:           "request",
 			SpanKind:           "SPAN_KIND_SERVER",
 			ServiceName:        "my-svc",
@@ -379,8 +379,8 @@ func TestSpanRowToOTLP_TimeCalculation(t *testing.T) {
 	ts := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 	row := clickhouse.SpanRow{
 		Timestamp:      ts,
-		TraceId:        "t1",
-		SpanId:         "s1",
+		TraceID:        "t1",
+		SpanID:         "s1",
 		SpanName:       "test",
 		SpanKind:       "SPAN_KIND_INTERNAL",
 		ServiceName:    "svc",
@@ -414,8 +414,8 @@ func TestBuildTrace_MultipleScopes(t *testing.T) {
 	spans := []clickhouse.SpanRow{
 		{
 			Timestamp:          ts,
-			TraceId:            "t1",
-			SpanId:             "s1",
+			TraceID:            "t1",
+			SpanID:             "s1",
 			SpanName:           "span1",
 			SpanKind:           "SPAN_KIND_SERVER",
 			ServiceName:        "svc",
@@ -428,8 +428,8 @@ func TestBuildTrace_MultipleScopes(t *testing.T) {
 		},
 		{
 			Timestamp:          ts,
-			TraceId:            "t1",
-			SpanId:             "s2",
+			TraceID:            "t1",
+			SpanID:             "s2",
 			SpanName:           "span2",
 			SpanKind:           "SPAN_KIND_CLIENT",
 			ServiceName:        "svc",

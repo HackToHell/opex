@@ -17,51 +17,85 @@ import (
 // Operator represents a TraceQL operator.
 type Operator int
 
+// Operator constants for TraceQL expressions.
 const (
+	// OpNone represents no operator.
 	OpNone Operator = iota
-	// Arithmetic
+	// OpAdd is the addition operator.
 	OpAdd
+	// OpSub is the subtraction operator.
 	OpSub
+	// OpDiv is the division operator.
 	OpDiv
+	// OpMod is the modulo operator.
 	OpMod
+	// OpMult is the multiplication operator.
 	OpMult
+	// OpPower is the exponentiation operator.
 	OpPower
-	// Comparison
+	// OpEqual is the equality operator.
 	OpEqual
+	// OpNotEqual is the inequality operator.
 	OpNotEqual
+	// OpRegex is the regex match operator.
 	OpRegex
+	// OpNotRegex is the negated regex match operator.
 	OpNotRegex
+	// OpGreater is the greater-than operator.
 	OpGreater
+	// OpGreaterEqual is the greater-than-or-equal operator.
 	OpGreaterEqual
+	// OpLess is the less-than operator.
 	OpLess
+	// OpLessEqual is the less-than-or-equal operator.
 	OpLessEqual
-	// Logical
+	// OpAnd is the logical AND operator.
 	OpAnd
+	// OpOr is the logical OR operator.
 	OpOr
+	// OpNot is the logical NOT operator.
 	OpNot
-	// Spanset-level
+	// OpSpansetAnd is the spanset-level AND operator.
 	OpSpansetAnd
+	// OpSpansetUnion is the spanset-level UNION operator.
 	OpSpansetUnion
-	// Structural
+	// OpSpansetChild is the structural child operator.
 	OpSpansetChild
+	// OpSpansetParent is the structural parent operator.
 	OpSpansetParent
+	// OpSpansetDescendant is the structural descendant operator.
 	OpSpansetDescendant
+	// OpSpansetAncestor is the structural ancestor operator.
 	OpSpansetAncestor
+	// OpSpansetSibling is the structural sibling operator.
 	OpSpansetSibling
+	// OpSpansetNotChild is the negated structural child operator.
 	OpSpansetNotChild
+	// OpSpansetNotParent is the negated structural parent operator.
 	OpSpansetNotParent
+	// OpSpansetNotDescendant is the negated structural descendant operator.
 	OpSpansetNotDescendant
+	// OpSpansetNotAncestor is the negated structural ancestor operator.
 	OpSpansetNotAncestor
+	// OpSpansetNotSibling is the negated structural sibling operator.
 	OpSpansetNotSibling
+	// OpSpansetUnionChild is the union structural child operator.
 	OpSpansetUnionChild
+	// OpSpansetUnionParent is the union structural parent operator.
 	OpSpansetUnionParent
+	// OpSpansetUnionDescendant is the union structural descendant operator.
 	OpSpansetUnionDescendant
+	// OpSpansetUnionAncestor is the union structural ancestor operator.
 	OpSpansetUnionAncestor
+	// OpSpansetUnionSibling is the union structural sibling operator.
 	OpSpansetUnionSibling
-	// Internal (post AST-rewrite)
+	// OpExists is the exists operator (post AST-rewrite).
 	OpExists
+	// OpNotExists is the not-exists operator (post AST-rewrite).
 	OpNotExists
+	// OpIn is the IN operator (post AST-rewrite).
 	OpIn
+	// OpNotIn is the NOT IN operator (post AST-rewrite).
 	OpNotIn
 )
 
@@ -94,18 +128,31 @@ func (op Operator) String() string {
 // StaticType represents the type of a Static value.
 type StaticType int
 
+// StaticType constants for literal values.
 const (
+	// TypeNil represents a nil value.
 	TypeNil StaticType = iota
+	// TypeInt represents an integer value.
 	TypeInt
+	// TypeFloat represents a floating-point value.
 	TypeFloat
+	// TypeString represents a string value.
 	TypeString
+	// TypeBoolean represents a boolean value.
 	TypeBoolean
+	// TypeDuration represents a duration value.
 	TypeDuration
+	// TypeStatus represents a span status value.
 	TypeStatus
+	// TypeKind represents a span kind value.
 	TypeKind
+	// TypeIntArray represents an integer array value.
 	TypeIntArray
+	// TypeFloatArray represents a floating-point array value.
 	TypeFloatArray
+	// TypeStringArray represents a string array value.
 	TypeStringArray
+	// TypeBooleanArray represents a boolean array value.
 	TypeBooleanArray
 )
 
@@ -143,9 +190,13 @@ func (t StaticType) String() string {
 // Status represents span status.
 type Status int
 
+// Status constants for span status values.
 const (
+	// StatusError represents an error status.
 	StatusError Status = iota
+	// StatusOk represents a successful status.
 	StatusOk
+	// StatusUnset represents an unset status.
 	StatusUnset
 )
 
@@ -165,12 +216,19 @@ func (s Status) String() string {
 // Kind represents span kind.
 type Kind int
 
+// Kind constants for span kind values.
 const (
+	// KindUnspecified represents an unspecified span kind.
 	KindUnspecified Kind = iota
+	// KindInternal represents an internal span kind.
 	KindInternal
+	// KindClient represents a client span kind.
 	KindClient
+	// KindServer represents a server span kind.
 	KindServer
+	// KindProducer represents a producer span kind.
 	KindProducer
+	// KindConsumer represents a consumer span kind.
 	KindConsumer
 )
 
@@ -196,12 +254,19 @@ func (k Kind) String() string {
 // AttributeScope represents the scope of an attribute.
 type AttributeScope int
 
+// AttributeScope constants for attribute lookup scope.
 const (
+	// AttributeScopeNone represents no specific scope.
 	AttributeScopeNone AttributeScope = iota
+	// AttributeScopeResource represents the resource scope.
 	AttributeScopeResource
+	// AttributeScopeSpan represents the span scope.
 	AttributeScopeSpan
+	// AttributeScopeEvent represents the event scope.
 	AttributeScopeEvent
+	// AttributeScopeLink represents the link scope.
 	AttributeScopeLink
+	// AttributeScopeInstrumentation represents the instrumentation scope.
 	AttributeScopeInstrumentation
 )
 
@@ -227,27 +292,49 @@ func (s AttributeScope) String() string {
 // Intrinsic represents a built-in attribute.
 type Intrinsic int
 
+// Intrinsic constants for built-in span attributes.
 const (
+	// IntrinsicNone represents no intrinsic.
 	IntrinsicNone Intrinsic = iota
+	// IntrinsicDuration represents span duration.
 	IntrinsicDuration
+	// IntrinsicName represents span name.
 	IntrinsicName
+	// IntrinsicStatus represents span status.
 	IntrinsicStatus
+	// IntrinsicStatusMessage represents span status message.
 	IntrinsicStatusMessage
+	// IntrinsicKind represents span kind.
 	IntrinsicKind
+	// IntrinsicChildCount represents span child count.
 	IntrinsicChildCount
+	// IntrinsicTraceRootService represents root service name.
 	IntrinsicTraceRootService
+	// IntrinsicTraceRootSpan represents root span name.
 	IntrinsicTraceRootSpan
+	// IntrinsicTraceDuration represents trace duration.
 	IntrinsicTraceDuration
+	// IntrinsicTraceID represents trace ID.
 	IntrinsicTraceID
+	// IntrinsicSpanID represents span ID.
 	IntrinsicSpanID
+	// IntrinsicParentID represents parent span ID.
 	IntrinsicParentID
+	// IntrinsicEventName represents event name.
 	IntrinsicEventName
+	// IntrinsicEventTimeSinceStart represents event time since span start.
 	IntrinsicEventTimeSinceStart
+	// IntrinsicLinkSpanID represents link span ID.
 	IntrinsicLinkSpanID
+	// IntrinsicLinkTraceID represents link trace ID.
 	IntrinsicLinkTraceID
+	// IntrinsicInstrumentationName represents instrumentation library name.
 	IntrinsicInstrumentationName
+	// IntrinsicInstrumentationVersion represents instrumentation library version.
 	IntrinsicInstrumentationVersion
+	// IntrinsicParent represents parent span.
 	IntrinsicParent
+	// IntrinsicSpanStartTime represents span start time.
 	IntrinsicSpanStartTime
 )
 
@@ -284,11 +371,17 @@ func (i Intrinsic) String() string {
 // AggregateOp represents a span-level aggregate function.
 type AggregateOp int
 
+// AggregateOp constants for span-level aggregate functions.
 const (
+	// AggregateCount represents the count() aggregate.
 	AggregateCount AggregateOp = iota
+	// AggregateMax represents the max() aggregate.
 	AggregateMax
+	// AggregateMin represents the min() aggregate.
 	AggregateMin
+	// AggregateSum represents the sum() aggregate.
 	AggregateSum
+	// AggregateAvg represents the avg() aggregate.
 	AggregateAvg
 )
 
@@ -312,14 +405,23 @@ func (a AggregateOp) String() string {
 // MetricsAggregateOp represents a metrics pipeline function.
 type MetricsAggregateOp int
 
+// MetricsAggregateOp constants for metrics pipeline functions.
 const (
+	// MetricsAggregateRate represents the rate() function.
 	MetricsAggregateRate MetricsAggregateOp = iota
+	// MetricsAggregateCountOverTime represents the count_over_time() function.
 	MetricsAggregateCountOverTime
+	// MetricsAggregateMinOverTime represents the min_over_time() function.
 	MetricsAggregateMinOverTime
+	// MetricsAggregateMaxOverTime represents the max_over_time() function.
 	MetricsAggregateMaxOverTime
+	// MetricsAggregateAvgOverTime represents the avg_over_time() function.
 	MetricsAggregateAvgOverTime
+	// MetricsAggregateSumOverTime represents the sum_over_time() function.
 	MetricsAggregateSumOverTime
+	// MetricsAggregateQuantileOverTime represents the quantile_over_time() function.
 	MetricsAggregateQuantileOverTime
+	// MetricsAggregateHistogramOverTime represents the histogram_over_time() function.
 	MetricsAggregateHistogramOverTime
 )
 

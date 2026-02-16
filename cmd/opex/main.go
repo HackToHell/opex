@@ -1,3 +1,4 @@
+// Package main is the entry point for the opex TraceQL-to-ClickHouse transpiler.
 package main
 
 import (

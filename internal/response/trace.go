@@ -15,10 +15,6 @@ func BuildTrace(spans []clickhouse.SpanRow) *Trace {
 	}
 
 	// Group spans by (ServiceName, ResourceAttributes) -> (ScopeName, ScopeVersion)
-	type resourceKey struct {
-		serviceName string
-		resAttrsKey string
-	}
 	type scopeKey struct {
 		name    string
 		version string
@@ -105,9 +101,9 @@ func spanRowToOTLP(row clickhouse.SpanRow) Span {
 	endNano := startNano + int64(row.Duration)
 
 	span := Span{
-		TraceID:           row.TraceId,
-		SpanID:            row.SpanId,
-		ParentSpanID:      row.ParentSpanId,
+		TraceID:           row.TraceID,
+		SpanID:            row.SpanID,
+		ParentSpanID:      row.ParentSpanID,
 		Name:              row.SpanName,
 		Kind:              spanKindToInt(row.SpanKind),
 		StartTimeUnixNano: fmt.Sprintf("%d", startNano),
@@ -129,10 +125,10 @@ func spanRowToOTLP(row clickhouse.SpanRow) Span {
 	}
 
 	// Links
-	for i := 0; i < len(row.LinksTraceId) && i < len(row.LinksSpanId); i++ {
+	for i := 0; i < len(row.LinksTraceID) && i < len(row.LinksSpanID); i++ {
 		lnk := Link{
-			TraceID: row.LinksTraceId[i],
-			SpanID:  row.LinksSpanId[i],
+			TraceID: row.LinksTraceID[i],
+			SpanID:  row.LinksSpanID[i],
 		}
 		if i < len(row.LinksAttributes) {
 			lnk.Attributes = mapToKeyValues(row.LinksAttributes[i])

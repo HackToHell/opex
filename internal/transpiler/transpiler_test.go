@@ -1866,7 +1866,7 @@ func TestApplyHintsNilHints(t *testing.T) {
 	}
 }
 
-func TestApplyHintsUnknownHint(t *testing.T) {
+func TestApplyHintsUnknownHint(_ *testing.T) {
 	root := &traceql.RootExpr{
 		Pipeline: traceql.Pipeline{
 			Elements: []traceql.PipelineElement{

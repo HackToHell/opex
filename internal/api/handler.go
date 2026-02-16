@@ -1,3 +1,4 @@
+// Package api provides HTTP handlers for Tempo-compatible trace query endpoints.
 package api
 
 import (
@@ -26,19 +27,19 @@ func NewHandlers(logger *slog.Logger) *Handlers {
 }
 
 // Echo is a health-check endpoint that returns "echo".
-func (h *Handlers) Echo(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) Echo(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("echo"))
 }
 
 // Ready returns 200 if the server is ready to serve traffic.
-func (h *Handlers) Ready(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) Ready(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ready"))
 }
 
 // BuildInfo returns build metadata as JSON.
-func (h *Handlers) BuildInfo(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) BuildInfo(w http.ResponseWriter, _ *http.Request) {
 	info := map[string]string{
 		"version":   Version,
 		"revision":  Revision,

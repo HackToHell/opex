@@ -88,7 +88,7 @@ func (h *MetricsHandlers) QueryRange(w http.ResponseWriter, r *http.Request) {
 		response.WriteError(w, http.StatusInternalServerError, "query execution failed")
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Build label names from by() clause
 	var labelNames []string
@@ -146,7 +146,7 @@ func (h *MetricsHandlers) QueryInstant(w http.ResponseWriter, r *http.Request) {
 		response.WriteError(w, http.StatusInternalServerError, "query execution failed")
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var series []response.InstantSeries
 	cols := rows.ColumnTypes()
@@ -160,7 +160,8 @@ func (h *MetricsHandlers) QueryInstant(w http.ResponseWriter, r *http.Request) {
 		for i, col := range cols {
 			name := col.Name()
 			dbType := col.DatabaseTypeName()
-			if name == "value" {
+			switch {
+			case name == "value":
 				valueIdx = i
 				switch {
 				case strings.Contains(dbType, "UInt"):
@@ -170,10 +171,10 @@ func (h *MetricsHandlers) QueryInstant(w http.ResponseWriter, r *http.Request) {
 				default:
 					scanArgs[i] = new(float64)
 				}
-			} else if strings.HasPrefix(name, "label_") {
+			case strings.HasPrefix(name, "label_"):
 				labelIndices[i] = strings.TrimPrefix(name, "label_")
 				scanArgs[i] = new(string)
-			} else {
+			default:
 				scanArgs[i] = new(string)
 			}
 		}
@@ -288,7 +289,7 @@ func (h *MetricsHandlers) MetricsSummary(w http.ResponseWriter, r *http.Request)
 		response.WriteError(w, http.StatusInternalServerError, "query execution failed")
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var summaries []response.SpanMetricsSummary
 	for rows.Next() {

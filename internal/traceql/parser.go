@@ -1102,40 +1102,6 @@ func (p *parser) parseStatic() (*Static, error) {
 	}
 }
 
-func (p *parser) parseStatusLiteral() (*Static, error) {
-	t := p.advance()
-	switch t.typ {
-	case tokenStatusError:
-		return &Static{Type: TypeStatus, StatusVal: StatusError}, nil
-	case tokenStatusOk:
-		return &Static{Type: TypeStatus, StatusVal: StatusOk}, nil
-	case tokenStatusUnset:
-		return &Static{Type: TypeStatus, StatusVal: StatusUnset}, nil
-	default:
-		return nil, fmt.Errorf("expected status literal, got %q", t.val)
-	}
-}
-
-func (p *parser) parseKindLiteral() (*Static, error) {
-	t := p.advance()
-	switch t.typ {
-	case tokenKindUnspecified:
-		return &Static{Type: TypeKind, KindVal: KindUnspecified}, nil
-	case tokenKindInternal:
-		return &Static{Type: TypeKind, KindVal: KindInternal}, nil
-	case tokenKindClient:
-		return &Static{Type: TypeKind, KindVal: KindClient}, nil
-	case tokenKindServer:
-		return &Static{Type: TypeKind, KindVal: KindServer}, nil
-	case tokenKindProducer:
-		return &Static{Type: TypeKind, KindVal: KindProducer}, nil
-	case tokenKindConsumer:
-		return &Static{Type: TypeKind, KindVal: KindConsumer}, nil
-	default:
-		return nil, fmt.Errorf("expected kind literal, got %q", t.val)
-	}
-}
-
 // parseDuration handles Go-style durations plus 'd' for days.
 func parseDuration(s string) (time.Duration, error) {
 	// Handle 'd' (day) suffix by converting to hours

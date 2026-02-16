@@ -1,3 +1,4 @@
+// Package server provides the main HTTP server with routing and middleware.
 package server
 
 import (

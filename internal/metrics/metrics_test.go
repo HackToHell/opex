@@ -61,7 +61,7 @@ func TestMetricsHandler(t *testing.T) {
 
 func TestMiddleware(t *testing.T) {
 	// Create a simple handler that returns 200
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -81,7 +81,7 @@ func TestMiddleware(t *testing.T) {
 }
 
 func TestMiddlewareCaptures500(t *testing.T) {
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("error"))
 	})
@@ -109,12 +109,12 @@ func TestResponseWriterCapturesStatusCode(t *testing.T) {
 	}
 }
 
-func TestObserveClickHouseQuery(t *testing.T) {
+func TestObserveClickHouseQuery(_ *testing.T) {
 	// Should not panic
 	ObserveClickHouseQuery("test_query", 100)
 }
 
-func TestRecordQueryError(t *testing.T) {
+func TestRecordQueryError(_ *testing.T) {
 	// Should not panic
 	RecordQueryError("parse_error")
 	RecordQueryError("clickhouse")

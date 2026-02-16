@@ -9,9 +9,9 @@ import (
 // SpanRow represents a single row from the otel_traces table.
 type SpanRow struct {
 	Timestamp          time.Time
-	TraceId            string
-	SpanId             string
-	ParentSpanId       string
+	TraceID            string
+	SpanID             string
+	ParentSpanID       string
 	TraceState         string
 	SpanName           string
 	SpanKind           string
@@ -26,8 +26,8 @@ type SpanRow struct {
 	EventsTimestamp    []time.Time
 	EventsName         []string
 	EventsAttributes   []map[string]string
-	LinksTraceId       []string
-	LinksSpanId        []string
+	LinksTraceID       []string
+	LinksSpanID        []string
 	LinksTraceState    []string
 	LinksAttributes    []map[string]string
 }
@@ -49,18 +49,18 @@ func (c *Client) QueryTraceByID(ctx context.Context, traceID string) ([]SpanRow,
 	if err != nil {
 		return nil, fmt.Errorf("query trace %s: %w", traceID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var spans []SpanRow
 	for rows.Next() {
 		var s SpanRow
 		if err := rows.Scan(
-			&s.Timestamp, &s.TraceId, &s.SpanId, &s.ParentSpanId, &s.TraceState,
+			&s.Timestamp, &s.TraceID, &s.SpanID, &s.ParentSpanID, &s.TraceState,
 			&s.SpanName, &s.SpanKind, &s.ServiceName, &s.ResourceAttributes,
 			&s.ScopeName, &s.ScopeVersion, &s.SpanAttributes, &s.Duration,
 			&s.StatusCode, &s.StatusMessage,
 			&s.EventsTimestamp, &s.EventsName, &s.EventsAttributes,
-			&s.LinksTraceId, &s.LinksSpanId, &s.LinksTraceState, &s.LinksAttributes,
+			&s.LinksTraceID, &s.LinksSpanID, &s.LinksTraceState, &s.LinksAttributes,
 		); err != nil {
 			return nil, fmt.Errorf("scan span row: %w", err)
 		}
@@ -74,13 +74,13 @@ func (c *Client) QueryTraceByID(ctx context.Context, traceID string) ([]SpanRow,
 	return spans, nil
 }
 
-// QuerySQL executes a raw SQL query and returns the TraceIds.
+// QueryTraceIDs executes a raw SQL query and returns the matching trace IDs.
 func (c *Client) QueryTraceIDs(ctx context.Context, sql string) ([]string, error) {
 	rows, err := c.conn.Query(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("query trace IDs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var traceIDs []string
 	for rows.Next() {
@@ -138,7 +138,7 @@ func (c *Client) QueryTagNamesFromView(ctx context.Context, table string) ([]str
 	if err != nil {
 		return nil, fmt.Errorf("query tag names from %s: %w", table, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tags []string
 	for rows.Next() {
@@ -158,7 +158,7 @@ func (c *Client) QueryServiceNamesFromView(ctx context.Context) ([]string, error
 	if err != nil {
 		return nil, fmt.Errorf("query service names: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var names []string
 	for rows.Next() {
@@ -192,18 +192,18 @@ func (c *Client) QuerySpansByTraceIDs(ctx context.Context, traceIDs []string) ([
 	if err != nil {
 		return nil, fmt.Errorf("query spans: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var spans []SpanRow
 	for rows.Next() {
 		var s SpanRow
 		if err := rows.Scan(
-			&s.Timestamp, &s.TraceId, &s.SpanId, &s.ParentSpanId, &s.TraceState,
+			&s.Timestamp, &s.TraceID, &s.SpanID, &s.ParentSpanID, &s.TraceState,
 			&s.SpanName, &s.SpanKind, &s.ServiceName, &s.ResourceAttributes,
 			&s.ScopeName, &s.ScopeVersion, &s.SpanAttributes, &s.Duration,
 			&s.StatusCode, &s.StatusMessage,
 			&s.EventsTimestamp, &s.EventsName, &s.EventsAttributes,
-			&s.LinksTraceId, &s.LinksSpanId, &s.LinksTraceState, &s.LinksAttributes,
+			&s.LinksTraceID, &s.LinksSpanID, &s.LinksTraceState, &s.LinksAttributes,
 		); err != nil {
 			return nil, fmt.Errorf("scan span row: %w", err)
 		}

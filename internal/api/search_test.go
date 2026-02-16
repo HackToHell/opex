@@ -22,9 +22,9 @@ func TestBuildSearchResponse_Basic(t *testing.T) {
 	spans := []clickhouse.SpanRow{
 		{
 			Timestamp:    ts,
-			TraceId:      "trace1",
-			SpanId:       "span1",
-			ParentSpanId: "",
+			TraceID:      "trace1",
+			SpanID:       "span1",
+			ParentSpanID: "",
 			SpanName:     "GET /api",
 			SpanKind:     "SPAN_KIND_SERVER",
 			ServiceName:  "frontend",
@@ -33,9 +33,9 @@ func TestBuildSearchResponse_Basic(t *testing.T) {
 		},
 		{
 			Timestamp:    ts.Add(100 * time.Millisecond),
-			TraceId:      "trace1",
-			SpanId:       "span2",
-			ParentSpanId: "span1",
+			TraceID:      "trace1",
+			SpanID:       "span2",
+			ParentSpanID: "span1",
 			SpanName:     "db.query",
 			SpanKind:     "SPAN_KIND_CLIENT",
 			ServiceName:  "backend",
@@ -70,9 +70,9 @@ func TestBuildSearchResponse_DurationFilter(t *testing.T) {
 	spans := []clickhouse.SpanRow{
 		{
 			Timestamp:    ts,
-			TraceId:      "trace1",
-			SpanId:       "span1",
-			ParentSpanId: "",
+			TraceID:      "trace1",
+			SpanID:       "span1",
+			ParentSpanID: "",
 			SpanName:     "slow",
 			ServiceName:  "svc",
 			Duration:     2000000000, // 2s
@@ -105,8 +105,8 @@ func TestBuildSearchResponse_SpanSets(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		spans = append(spans, clickhouse.SpanRow{
 			Timestamp:   ts.Add(time.Duration(i) * time.Millisecond),
-			TraceId:     "trace1",
-			SpanId:      "span" + string(rune('a'+i)),
+			TraceID:     "trace1",
+			SpanID:      "span" + string(rune('a'+i)),
 			SpanName:    "op",
 			ServiceName: "svc",
 			Duration:    1000000,
@@ -142,9 +142,9 @@ func TestBuildTraceMetadata_ServiceStats(t *testing.T) {
 	spans := []clickhouse.SpanRow{
 		{
 			Timestamp:    ts,
-			TraceId:      "trace1",
-			SpanId:       "span1",
-			ParentSpanId: "",
+			TraceID:      "trace1",
+			SpanID:       "span1",
+			ParentSpanID: "",
 			SpanName:     "root",
 			ServiceName:  "svc-a",
 			Duration:     1000000,
@@ -152,9 +152,9 @@ func TestBuildTraceMetadata_ServiceStats(t *testing.T) {
 		},
 		{
 			Timestamp:    ts,
-			TraceId:      "trace1",
-			SpanId:       "span2",
-			ParentSpanId: "span1",
+			TraceID:      "trace1",
+			SpanID:       "span2",
+			ParentSpanID: "span1",
 			SpanName:     "child",
 			ServiceName:  "svc-b",
 			Duration:     500000,
@@ -162,9 +162,9 @@ func TestBuildTraceMetadata_ServiceStats(t *testing.T) {
 		},
 		{
 			Timestamp:    ts,
-			TraceId:      "trace1",
-			SpanId:       "span3",
-			ParentSpanId: "span1",
+			TraceID:      "trace1",
+			SpanID:       "span3",
+			ParentSpanID: "span1",
 			SpanName:     "child2",
 			ServiceName:  "svc-a",
 			Duration:     300000,
@@ -193,9 +193,9 @@ func TestBuildSearchResponse_MultipleTraces(t *testing.T) {
 	spans := []clickhouse.SpanRow{
 		{
 			Timestamp:    ts,
-			TraceId:      "trace1",
-			SpanId:       "span1",
-			ParentSpanId: "",
+			TraceID:      "trace1",
+			SpanID:       "span1",
+			ParentSpanID: "",
 			SpanName:     "root1",
 			ServiceName:  "svc",
 			Duration:     1000000,
@@ -203,9 +203,9 @@ func TestBuildSearchResponse_MultipleTraces(t *testing.T) {
 		},
 		{
 			Timestamp:    ts,
-			TraceId:      "trace2",
-			SpanId:       "span2",
-			ParentSpanId: "",
+			TraceID:      "trace2",
+			SpanID:       "span2",
+			ParentSpanID: "",
 			SpanName:     "root2",
 			ServiceName:  "svc",
 			Duration:     2000000,
@@ -233,9 +233,9 @@ func TestBuildSearchResponse_Metrics(t *testing.T) {
 	spans := []clickhouse.SpanRow{
 		{
 			Timestamp:    ts,
-			TraceId:      "trace1",
-			SpanId:       "span1",
-			ParentSpanId: "",
+			TraceID:      "trace1",
+			SpanID:       "span1",
+			ParentSpanID: "",
 			SpanName:     "root",
 			ServiceName:  "svc",
 			Duration:     1000000,

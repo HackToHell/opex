@@ -47,7 +47,6 @@ func Transpile(root *traceql.RootExpr, opts TranspileOptions) (*TranspileResult,
 
 	t := &transpiler{
 		opts:   opts,
-		argIdx: 0,
 		args:   nil,
 		cteIdx: 0,
 	}
@@ -69,9 +68,10 @@ func applyHints(root *traceql.RootExpr, opts *TranspileOptions) {
 	for _, h := range root.Hints.Hints {
 		switch h.Name {
 		case "sample":
-			if h.Value.Type == traceql.TypeFloat {
+			switch h.Value.Type {
+			case traceql.TypeFloat:
 				opts.SampleRate = h.Value.FloatVal
-			} else if h.Value.Type == traceql.TypeInt {
+			case traceql.TypeInt:
 				opts.SampleRate = float64(h.Value.IntVal) / 100.0
 			}
 		case "prewhere":
@@ -86,15 +86,7 @@ func applyHints(root *traceql.RootExpr, opts *TranspileOptions) {
 type transpiler struct {
 	opts   TranspileOptions
 	args   []any
-	argIdx int
 	cteIdx int
-}
-
-// addArg adds a query parameter and returns the placeholder.
-func (t *transpiler) addArg(val any) string {
-	t.args = append(t.args, val)
-	t.argIdx++
-	return fmt.Sprintf("{p%d:String}", t.argIdx)
 }
 
 // nextCTE returns the next CTE alias name.
@@ -243,7 +235,9 @@ func (t *transpiler) transpileSpansetFilter(f *traceql.SpansetFilter, prevCTE st
 	}
 
 	// Standard path: combine all conditions into WHERE
-	allConditions := append(timeConditions, filterConditions...)
+	allConditions := make([]string, 0, len(timeConditions)+len(filterConditions))
+	allConditions = append(allConditions, timeConditions...)
+	allConditions = append(allConditions, filterConditions...)
 	where := "1=1"
 	if len(allConditions) > 0 {
 		where = strings.Join(allConditions, " AND ")

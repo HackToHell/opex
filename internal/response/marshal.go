@@ -6,8 +6,11 @@ import (
 	"strings"
 )
 
+// MIME type constants for content negotiation.
 const (
-	HeaderAcceptJSON     = "application/json"
+	// HeaderAcceptJSON is the MIME type for JSON responses.
+	HeaderAcceptJSON = "application/json"
+	// HeaderAcceptProtobuf is the MIME type for Protobuf responses.
 	HeaderAcceptProtobuf = "application/protobuf"
 )
 
