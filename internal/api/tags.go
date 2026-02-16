@@ -200,7 +200,7 @@ func (h *TagHandlers) queryMapKeys(r *http.Request, mapCol string, start, end in
 
 	// Fallback: scan the traces table
 	sql := fmt.Sprintf(
-		"SELECT DISTINCT arrayJoin(mapKeys(%s)) AS tag_name FROM %s WHERE Timestamp >= toDateTime64(%d, 9) AND Timestamp <= toDateTime64(%d, 9) ORDER BY tag_name LIMIT 1000",
+		"SELECT DISTINCT arrayJoin(mapKeys(%s)) AS tag_name FROM %s WHERE Timestamp >= fromUnixTimestamp64Nano(%d) AND Timestamp <= fromUnixTimestamp64Nano(%d) ORDER BY tag_name LIMIT 1000",
 		mapCol, h.ch.Table(), start.UnixNano(), end.UnixNano(),
 	)
 
@@ -238,11 +238,11 @@ func (h *TagHandlers) queryTagValues(r *http.Request, tagName string, start, end
 		`SELECT DISTINCT val FROM (
 			SELECT SpanAttributes['%s'] AS val FROM %s
 			WHERE mapContains(SpanAttributes, '%s')
-			  AND Timestamp >= toDateTime64(%d, 9) AND Timestamp <= toDateTime64(%d, 9)
+			  AND Timestamp >= fromUnixTimestamp64Nano(%d) AND Timestamp <= fromUnixTimestamp64Nano(%d)
 			UNION ALL
 			SELECT ResourceAttributes['%s'] AS val FROM %s
 			WHERE mapContains(ResourceAttributes, '%s')
-			  AND Timestamp >= toDateTime64(%d, 9) AND Timestamp <= toDateTime64(%d, 9)
+			  AND Timestamp >= fromUnixTimestamp64Nano(%d) AND Timestamp <= fromUnixTimestamp64Nano(%d)
 		) WHERE val != '' ORDER BY val LIMIT 1000`,
 		tagName, h.ch.Table(), tagName, start.UnixNano(), end.UnixNano(),
 		tagName, h.ch.Table(), tagName, start.UnixNano(), end.UnixNano(),
@@ -273,7 +273,7 @@ func (h *TagHandlers) queryDistinctColumn(r *http.Request, col string, start, en
 	}
 
 	sql := fmt.Sprintf(
-		"SELECT DISTINCT %s FROM %s WHERE Timestamp >= toDateTime64(%d, 9) AND Timestamp <= toDateTime64(%d, 9) ORDER BY %s LIMIT 1000",
+		"SELECT DISTINCT %s FROM %s WHERE Timestamp >= fromUnixTimestamp64Nano(%d) AND Timestamp <= fromUnixTimestamp64Nano(%d) ORDER BY %s LIMIT 1000",
 		col, h.ch.Table(), start.UnixNano(), end.UnixNano(), col,
 	)
 

@@ -1,0 +1,36 @@
+# Build artifacts
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Go coverage
+*.out
+cover.out
+coverage.html
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Tool-specific settings
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+
+# Environment / secrets
+.env
+.env.*
+credentials.json

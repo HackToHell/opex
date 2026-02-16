@@ -152,27 +152,53 @@ func (h *MetricsHandlers) QueryInstant(w http.ResponseWriter, r *http.Request) {
 	cols := rows.ColumnTypes()
 
 	for rows.Next() {
-		values := make([]any, len(cols))
-		valuePtrs := make([]any, len(cols))
-		for i := range values {
-			valuePtrs[i] = &values[i]
+		// Build typed scan targets based on column types
+		scanArgs := make([]any, len(cols))
+		valueIdx := -1
+		labelIndices := map[int]string{}
+
+		for i, col := range cols {
+			name := col.Name()
+			dbType := col.DatabaseTypeName()
+			if name == "value" {
+				valueIdx = i
+				switch {
+				case strings.Contains(dbType, "UInt"):
+					scanArgs[i] = new(uint64)
+				case strings.Contains(dbType, "Int"):
+					scanArgs[i] = new(int64)
+				default:
+					scanArgs[i] = new(float64)
+				}
+			} else if strings.HasPrefix(name, "label_") {
+				labelIndices[i] = strings.TrimPrefix(name, "label_")
+				scanArgs[i] = new(string)
+			} else {
+				scanArgs[i] = new(string)
+			}
 		}
-		if err := rows.Scan(valuePtrs...); err != nil {
+
+		if err := rows.Scan(scanArgs...); err != nil {
 			h.logger.Error("scan row failed", "error", err)
 			continue
 		}
 
 		is := response.InstantSeries{}
-		for i, col := range cols {
-			name := col.Name()
-			if name == "value" {
-				is.Value = toFloat64(values[i])
-			} else if strings.HasPrefix(name, "label_") {
-				is.Labels = append(is.Labels, response.Label{
-					Key:   strings.TrimPrefix(name, "label_"),
-					Value: fmt.Sprintf("%v", values[i]),
-				})
+		if valueIdx >= 0 {
+			switch v := scanArgs[valueIdx].(type) {
+			case *uint64:
+				is.Value = float64(*v)
+			case *int64:
+				is.Value = float64(*v)
+			case *float64:
+				is.Value = *v
 			}
+		}
+		for i, key := range labelIndices {
+			is.Labels = append(is.Labels, response.Label{
+				Key:   key,
+				Value: *scanArgs[i].(*string),
+			})
 		}
 		series = append(series, is)
 	}
@@ -201,7 +227,7 @@ func (h *MetricsHandlers) MetricsSummary(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Build WHERE from q
-	whereClause := fmt.Sprintf("Timestamp >= toDateTime64(%d, 9) AND Timestamp <= toDateTime64(%d, 9)",
+	whereClause := fmt.Sprintf("Timestamp >= fromUnixTimestamp64Nano(%d) AND Timestamp <= fromUnixTimestamp64Nano(%d)",
 		start.UnixNano(), end.UnixNano())
 	if q != "" {
 		root, err := traceql.Parse(q)
@@ -267,9 +293,10 @@ func (h *MetricsHandlers) MetricsSummary(w http.ResponseWriter, r *http.Request)
 	var summaries []response.SpanMetricsSummary
 	for rows.Next() {
 		var s response.SpanMetricsSummary
+		var spanCount, errorCount uint64
 		var p99, p95, p90, p50 float64
 
-		scanArgs := []any{&s.SpanCount, &s.ErrorSpanCount, &p99, &p95, &p90, &p50}
+		scanArgs := []any{&spanCount, &errorCount, &p99, &p95, &p90, &p50}
 
 		// Add label scan args
 		labelVals := make([]string, len(selectLabels))
@@ -281,6 +308,9 @@ func (h *MetricsHandlers) MetricsSummary(w http.ResponseWriter, r *http.Request)
 			h.logger.Error("scan summary row failed", "error", err)
 			continue
 		}
+
+		s.SpanCount = int(spanCount)
+		s.ErrorSpanCount = int(errorCount)
 
 		// Convert durations from nanoseconds to milliseconds
 		s.P99 = p99 / 1e6
@@ -359,7 +389,7 @@ func (h *MetricsHandlers) buildMetricsRangeSQL(m *traceql.MetricsAggregate, filt
 		stepSeconds = 1
 	}
 
-	timeFilter := fmt.Sprintf("Timestamp >= toDateTime64(%d, 9) AND Timestamp <= toDateTime64(%d, 9)",
+	timeFilter := fmt.Sprintf("Timestamp >= fromUnixTimestamp64Nano(%d) AND Timestamp <= fromUnixTimestamp64Nano(%d)",
 		start.UnixNano(), end.UnixNano())
 
 	// Determine aggregation expression
@@ -401,7 +431,7 @@ func (h *MetricsHandlers) buildMetricsRangeSQL(m *traceql.MetricsAggregate, filt
 
 	selectParts := []string{
 		fmt.Sprintf("toStartOfInterval(Timestamp, INTERVAL %d SECOND) AS ts", stepSeconds),
-		aggExpr + " AS value",
+		"toFloat64(" + aggExpr + ") AS value",
 	}
 	selectParts = append(selectParts, selectLabels...)
 

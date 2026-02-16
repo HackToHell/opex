@@ -79,6 +79,11 @@ func (c *Client) Table() string {
 	return c.cfg.TracesTable
 }
 
+// Exec executes a statement that does not return rows (DDL, INSERT, etc.).
+func (c *Client) Exec(ctx context.Context, sql string, args ...any) error {
+	return c.conn.Exec(ctx, sql, args...)
+}
+
 // Query executes a query and returns rows.
 // If the config has a ReadTimeout, a deadline is applied to the context.
 func (c *Client) Query(ctx context.Context, sql string, args ...any) (driver.Rows, error) {

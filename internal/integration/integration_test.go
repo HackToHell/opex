@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"testing"
 	"time"
 
@@ -54,7 +53,7 @@ func TestMain(m *testing.M) {
 	container, err = chmodule.Run(ctx,
 		"clickhouse/clickhouse-server:24.8",
 		chmodule.WithUsername("default"),
-		chmodule.WithPassword(""),
+		chmodule.WithPassword("opex_test"),
 		chmodule.WithDatabase("otel"),
 		chmodule.WithInitScripts(
 			filepath.Join("testdata", "init.sql"),
@@ -81,7 +80,7 @@ func TestMain(m *testing.M) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	cfg := config.DefaultConfig()
-	cfg.ClickHouse.DSN = dsn + "database=otel"
+	cfg.ClickHouse.DSN = dsn
 	cfg.ClickHouse.TracesTable = "otel.otel_traces"
 	cfg.ClickHouse.DialTimeout = 10 * time.Second
 	cfg.ClickHouse.ReadTimeout = 30 * time.Second
@@ -1376,42 +1375,31 @@ func TestMatViews(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	// Execute matviews.sql via a temporary ClickHouse connection
+	// Execute matviews.sql via Docker exec into the ClickHouse container
 	matviewSQL, err := os.ReadFile(filepath.Join("testdata", "matviews.sql"))
 	if err != nil {
 		t.Fatalf("reading matviews.sql: %v", err)
 	}
 
-	// Create a temporary client to run the DDL
-	tmpCfg := config.DefaultConfig()
-	tmpCfg.ClickHouse.DSN = dsn + "database=otel"
-	tmpCfg.ClickHouse.DialTimeout = 10 * time.Second
-
-	tmpClient, err := clickhouse.New(tmpCfg.ClickHouse, logger)
+	// Use container exec to run the SQL via clickhouse-client --multiquery
+	exitCode, reader, err := container.Exec(ctx, []string{
+		"clickhouse-client",
+		"--user", "default",
+		"--password", "opex_test",
+		"--multiquery",
+		"--query", string(matviewSQL),
+	})
 	if err != nil {
-		t.Fatalf("creating tmp client for matviews: %v", err)
+		t.Fatalf("exec matviews in container: %v", err)
 	}
-
-	// Execute each statement in the matviews SQL
-	statements := splitSQL(string(matviewSQL))
-	for _, stmt := range statements {
-		stmt = strings.TrimSpace(stmt)
-		if stmt == "" || strings.HasPrefix(stmt, "--") {
-			continue
-		}
-		if _, err := tmpClient.Query(ctx, stmt); err != nil {
-			// Query returns rows for DDL, ignore scan errors
-			// Try to detect real errors vs "no rows" from DDL
-			if !strings.Contains(err.Error(), "no rows") {
-				t.Logf("matview statement warning: %v\nSQL: %.100s...", err, stmt)
-			}
-		}
+	if exitCode != 0 {
+		out, _ := io.ReadAll(reader)
+		t.Fatalf("matviews exec failed (code %d): %s", exitCode, string(out))
 	}
-	tmpClient.Close()
 
 	// Create a new ClickHouse client with mat views enabled
 	mvCfg := config.DefaultConfig()
-	mvCfg.ClickHouse.DSN = dsn + "database=otel"
+	mvCfg.ClickHouse.DSN = dsn
 	mvCfg.ClickHouse.TracesTable = "otel.otel_traces"
 	mvCfg.ClickHouse.UseMatViews = true
 	mvCfg.ClickHouse.TraceMetadataTable = "otel.otel_trace_metadata"
@@ -1525,63 +1513,4 @@ func httpGetJSONURL(t *testing.T, fullURL string, result any) int {
 		t.Fatalf("decoding JSON from %s: %v\nbody: %s", fullURL, err, string(body))
 	}
 	return resp.StatusCode
-}
-
-// splitSQL splits a multi-statement SQL string on semicolons,
-// being careful not to split inside string literals.
-func splitSQL(sql string) []string {
-	var statements []string
-	var current strings.Builder
-	inString := false
-
-	for i := 0; i < len(sql); i++ {
-		ch := sql[i]
-		if ch == '\'' && !inString {
-			inString = true
-			current.WriteByte(ch)
-		} else if ch == '\'' && inString {
-			// Check for escaped quote
-			if i+1 < len(sql) && sql[i+1] == '\'' {
-				current.WriteByte(ch)
-				current.WriteByte(sql[i+1])
-				i++
-			} else {
-				inString = false
-				current.WriteByte(ch)
-			}
-		} else if ch == ';' && !inString {
-			stmt := strings.TrimSpace(current.String())
-			if stmt != "" {
-				statements = append(statements, stmt)
-			}
-			current.Reset()
-		} else {
-			current.WriteByte(ch)
-		}
-	}
-
-	// Don't forget the last statement if it doesn't end with ;
-	stmt := strings.TrimSpace(current.String())
-	if stmt != "" {
-		statements = append(statements, stmt)
-	}
-
-	// Filter out comment-only statements
-	var filtered []string
-	for _, s := range statements {
-		lines := strings.Split(s, "\n")
-		hasCode := false
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed != "" && !strings.HasPrefix(trimmed, "--") {
-				hasCode = true
-				break
-			}
-		}
-		if hasCode {
-			filtered = append(filtered, s)
-		}
-	}
-
-	return filtered
 }

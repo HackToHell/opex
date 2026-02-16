@@ -109,12 +109,12 @@ func (t *transpiler) timeFilter() string {
 		return ""
 	}
 	if t.opts.Start.IsZero() {
-		return fmt.Sprintf("Timestamp <= toDateTime64(%d, 9)", t.opts.End.UnixNano())
+		return fmt.Sprintf("Timestamp <= fromUnixTimestamp64Nano(%d)", t.opts.End.UnixNano())
 	}
 	if t.opts.End.IsZero() {
-		return fmt.Sprintf("Timestamp >= toDateTime64(%d, 9)", t.opts.Start.UnixNano())
+		return fmt.Sprintf("Timestamp >= fromUnixTimestamp64Nano(%d)", t.opts.Start.UnixNano())
 	}
-	return fmt.Sprintf("Timestamp >= toDateTime64(%d, 9) AND Timestamp <= toDateTime64(%d, 9)",
+	return fmt.Sprintf("Timestamp >= fromUnixTimestamp64Nano(%d) AND Timestamp <= fromUnixTimestamp64Nano(%d)",
 		t.opts.Start.UnixNano(), t.opts.End.UnixNano())
 }
 
@@ -551,12 +551,12 @@ func (t *transpiler) aliasedTimeFilter(alias string) string {
 		return "1=1"
 	}
 	if t.opts.Start.IsZero() {
-		return fmt.Sprintf("%s.Timestamp <= toDateTime64(%d, 9)", alias, t.opts.End.UnixNano())
+		return fmt.Sprintf("%s.Timestamp <= fromUnixTimestamp64Nano(%d)", alias, t.opts.End.UnixNano())
 	}
 	if t.opts.End.IsZero() {
-		return fmt.Sprintf("%s.Timestamp >= toDateTime64(%d, 9)", alias, t.opts.Start.UnixNano())
+		return fmt.Sprintf("%s.Timestamp >= fromUnixTimestamp64Nano(%d)", alias, t.opts.Start.UnixNano())
 	}
-	return fmt.Sprintf("%s.Timestamp >= toDateTime64(%d, 9) AND %s.Timestamp <= toDateTime64(%d, 9)",
+	return fmt.Sprintf("%s.Timestamp >= fromUnixTimestamp64Nano(%d) AND %s.Timestamp <= fromUnixTimestamp64Nano(%d)",
 		alias, t.opts.Start.UnixNano(), alias, t.opts.End.UnixNano())
 }
 
