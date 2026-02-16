@@ -1,0 +1,23 @@
+apiVersion: 1
+
+datasources:
+  - name: Opex (Tempo)
+    type: tempo
+    access: proxy
+    # When running Opex on the host machine, use host.docker.internal.
+    # Change this to http://opex:8080 if running Opex in docker-compose.
+    url: http://host.docker.internal:8080
+    isDefault: true
+    editable: true
+    jsonData:
+      tracesToLogs:
+        datasourceUid: ""
+      nodeGraph:
+        enabled: true
+      traceQuery:
+        timeShiftEnabled: true
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+      search:
+        filters: []
+      streamingEnabled: false

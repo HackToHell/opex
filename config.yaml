@@ -1,0 +1,22 @@
+listen_addr: ":8080"
+
+clickhouse:
+  dsn: "clickhouse://localhost:9000/otel"
+  traces_table: "otel_traces"
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 5m
+  dial_timeout: 5s
+  read_timeout: 30s
+
+query:
+  max_limit: 100
+  default_limit: 20
+  default_spss: 3
+  max_duration: 168h
+  timeout: 30s
+  max_concurrent: 20
+
+logging:
+  level: info
+  format: text
