@@ -165,6 +165,7 @@ var keywords = map[string]tokenType{
 	"rootName":        tokenIdent,
 	"traceDuration":   tokenIdent,
 	"spanStartTime":   tokenIdent,
+	"nestedSetParent": tokenIdent,
 	"resource":        tokenIdent,
 	"span":            tokenIdent,
 	"event":           tokenIdent,
@@ -172,7 +173,6 @@ var keywords = map[string]tokenType{
 	"instrumentation": tokenIdent,
 	"parent":          tokenIdent,
 	"trace":           tokenIdent,
-	"nestedSetParent": tokenIdent,
 	"nestedSetLeft":   tokenIdent,
 	"nestedSetRight":  tokenIdent,
 }

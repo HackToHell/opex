@@ -105,6 +105,20 @@ func TestParseIntrinsicKind(t *testing.T) {
 	}
 }
 
+func TestParseIntrinsicNestedSetParent(t *testing.T) {
+	root := mustParse(t, "{ nestedSetParent >= -1 }")
+	sf := root.Pipeline.Elements[0].(*SpansetFilter)
+	bin := sf.Expression.(*BinaryOperation)
+	attr := bin.LHS.(*Attribute)
+	if attr.Intrinsic != IntrinsicNestedSetParent {
+		t.Fatalf("expected IntrinsicNestedSetParent, got %v", attr.Intrinsic)
+	}
+	static := bin.RHS.(*Static)
+	if static.Type != TypeInt || static.IntVal != -1 {
+		t.Fatalf("expected int -1, got %v %d", static.Type, static.IntVal)
+	}
+}
+
 func TestParseScopedAttribute(t *testing.T) {
 	root := mustParse(t, `{ resource.service.name = "frontend" }`)
 	sf := root.Pipeline.Elements[0].(*SpansetFilter)

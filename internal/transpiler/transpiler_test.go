@@ -207,7 +207,7 @@ func TestTranspileSpansetAnd(t *testing.T) {
 
 func TestTranspileSpansetUnion(t *testing.T) {
 	sql := mustTranspile(t, `{ .http.method = "GET" } || { status = error }`)
-	assertContains(t, sql, "UNION")
+	assertContains(t, sql, "UNION DISTINCT")
 	t.Logf("SQL: %s", sql)
 }
 
@@ -1983,7 +1983,7 @@ func TestTranspileStructuralUnionChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertContains(t, result.SQL, "UNION")
+	assertContains(t, result.SQL, "UNION DISTINCT")
 	assertContains(t, result.SQL, "JOIN")
 	t.Logf("SQL: %s", result.SQL)
 }

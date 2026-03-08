@@ -1,6 +1,7 @@
 package response
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,58 @@ func TestWriteJSON_CustomStatus(t *testing.T) {
 	resp := w.Result()
 	if resp.StatusCode != http.StatusCreated {
 		t.Errorf("expected status 201, got %d", resp.StatusCode)
+	}
+}
+
+func TestWriteTrace_Protobuf(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", HeaderAcceptProtobuf)
+	w := httptest.NewRecorder()
+
+	trace := &Trace{}
+	want, err := MarshalTraceProto(trace)
+	if err != nil {
+		t.Fatalf("MarshalTraceProto() error: %v", err)
+	}
+	if err := WriteTrace(w, req, http.StatusOK, trace); err != nil {
+		t.Fatalf("WriteTrace() error: %v", err)
+	}
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Content-Type") != HeaderAcceptProtobuf {
+		t.Errorf("expected Content-Type %q, got %q", HeaderAcceptProtobuf, resp.Header.Get("Content-Type"))
+	}
+	if !bytes.Equal(w.Body.Bytes(), want) {
+		t.Error("WriteTrace() did not write expected protobuf payload")
+	}
+}
+
+func TestWriteTraceByIDResponse_Protobuf(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", HeaderAcceptProtobuf)
+	w := httptest.NewRecorder()
+
+	respBody := &TraceByIDResponse{Trace: &Trace{}, Status: "complete"}
+	want, err := MarshalTraceByIDResponseProto(respBody.Trace)
+	if err != nil {
+		t.Fatalf("MarshalTraceByIDResponseProto() error: %v", err)
+	}
+	if err := WriteTraceByIDResponse(w, req, http.StatusOK, respBody); err != nil {
+		t.Fatalf("WriteTraceByIDResponse() error: %v", err)
+	}
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Content-Type") != HeaderAcceptProtobuf {
+		t.Errorf("expected Content-Type %q, got %q", HeaderAcceptProtobuf, resp.Header.Get("Content-Type"))
+	}
+	if !bytes.Equal(w.Body.Bytes(), want) {
+		t.Error("WriteTraceByIDResponse() did not write expected protobuf payload")
 	}
 }
 

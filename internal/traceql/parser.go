@@ -295,27 +295,36 @@ func (p *parser) parseSpansetPrimary() (PipelineElement, error) {
 		return &SpansetFilter{Expression: nil}, nil
 	}
 
-	// Handle leading && or || (e.g., { && true } from Grafana drilldown).
-	// Treat the missing LHS as "all spans" and just parse the RHS expression.
+	// Handle leading && or || (e.g., { && true } from Grafana Drilldown).
+	// The implicit left operand is true (match all spans).
+	// We must respect && > || precedence, matching parseOr/parseAnd.
+	var expr FieldExpression
 	if p.peek() == tokenAnd || p.peek() == tokenOr {
-		p.advance() // consume the leading && or ||
-		if p.peek() == tokenCloseBrace {
+		expr = &Static{Type: TypeBoolean, BoolVal: true}
+		// Bind && first (higher precedence)
+		for p.peek() == tokenAnd {
 			p.advance()
-			return &SpansetFilter{Expression: nil}, nil
+			rhs, err := p.parseComparison()
+			if err != nil {
+				return nil, err
+			}
+			expr = &BinaryOperation{Op: OpAnd, LHS: expr, RHS: rhs}
 		}
-		expr, err := p.parseFieldExpression()
+		// Then bind || (lower precedence), delegating to parseAnd for RHS
+		for p.peek() == tokenOr {
+			p.advance()
+			rhs, err := p.parseAnd()
+			if err != nil {
+				return nil, err
+			}
+			expr = &BinaryOperation{Op: OpOr, LHS: expr, RHS: rhs}
+		}
+	} else {
+		var err error
+		expr, err = p.parseFieldExpression()
 		if err != nil {
 			return nil, err
 		}
-		if _, err := p.expect(tokenCloseBrace); err != nil {
-			return nil, fmt.Errorf("expected '}': %w", err)
-		}
-		return &SpansetFilter{Expression: expr}, nil
-	}
-
-	expr, err := p.parseFieldExpression()
-	if err != nil {
-		return nil, err
 	}
 
 	if _, err := p.expect(tokenCloseBrace); err != nil {

@@ -336,13 +336,9 @@ const (
 	IntrinsicParent
 	// IntrinsicSpanStartTime represents span start time.
 	IntrinsicSpanStartTime
-	// IntrinsicNestedSetParent represents the nested set parent position.
-	// Used by Grafana's Traces Drilldown: nestedSetParent < 0 means root span.
+	// IntrinsicNestedSetParent is Tempo's nested-set parent index.
+	// Root spans have nestedSetParent = -1; non-root spans >= 0.
 	IntrinsicNestedSetParent
-	// IntrinsicNestedSetLeft represents the nested set left boundary.
-	IntrinsicNestedSetLeft
-	// IntrinsicNestedSetRight represents the nested set right boundary.
-	IntrinsicNestedSetRight
 )
 
 var intrinsicStrings = map[Intrinsic]string{
@@ -367,8 +363,6 @@ var intrinsicStrings = map[Intrinsic]string{
 	IntrinsicParent:                 "parent",
 	IntrinsicSpanStartTime:          "spanStartTime",
 	IntrinsicNestedSetParent:        "nestedSetParent",
-	IntrinsicNestedSetLeft:          "nestedSetLeft",
-	IntrinsicNestedSetRight:         "nestedSetRight",
 }
 
 func (i Intrinsic) String() string {
@@ -788,8 +782,6 @@ var intrinsicFromString = map[string]Intrinsic{
 	"instrumentation:version": IntrinsicInstrumentationVersion,
 	"parent":                  IntrinsicParent,
 	"nestedSetParent":         IntrinsicNestedSetParent,
-	"nestedSetLeft":           IntrinsicNestedSetLeft,
-	"nestedSetRight":          IntrinsicNestedSetRight,
 }
 
 // LookupIntrinsic returns the Intrinsic for a given string, or IntrinsicNone.

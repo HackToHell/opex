@@ -25,24 +25,6 @@ func (t *transpiler) transpileFieldExpr(expr traceql.FieldExpression) (string, e
 
 // transpileBinaryOp converts a binary operation to SQL.
 func (t *transpiler) transpileBinaryOp(b *traceql.BinaryOperation) (string, error) {
-	// Optimize: x && true → x, true && x → x, x || false → x, false || x → x
-	if b.Op == traceql.OpAnd {
-		if isBoolLiteral(b.RHS, true) {
-			return t.transpileFieldExpr(b.LHS)
-		}
-		if isBoolLiteral(b.LHS, true) {
-			return t.transpileFieldExpr(b.RHS)
-		}
-	}
-	if b.Op == traceql.OpOr {
-		if isBoolLiteral(b.RHS, false) {
-			return t.transpileFieldExpr(b.LHS)
-		}
-		if isBoolLiteral(b.LHS, false) {
-			return t.transpileFieldExpr(b.RHS)
-		}
-	}
-
 	// Special case: attribute compared to a typed value needs type coercion
 	if attr, ok := b.LHS.(*traceql.Attribute); ok {
 		if static, ok := b.RHS.(*traceql.Static); ok {
@@ -70,11 +52,6 @@ func (t *transpiler) transpileBinaryOp(b *traceql.BinaryOperation) (string, erro
 	}
 
 	return fmt.Sprintf("(%s %s %s)", lhs, op, rhs), nil
-}
-
-func isBoolLiteral(expr traceql.FieldExpression, val bool) bool {
-	s, ok := expr.(*traceql.Static)
-	return ok && s.Type == traceql.TypeBoolean && s.BoolVal == val
 }
 
 // transpileUnaryOp converts a unary operation to SQL.
@@ -133,6 +110,16 @@ func (t *transpiler) transpileExists(expr traceql.FieldExpression, exists bool) 
 // transpileAttributeComparison handles the common case of attribute op static
 // with proper type coercion for map values.
 func (t *transpiler) transpileAttributeComparison(attr *traceql.Attribute, op traceql.Operator, static *traceql.Static) (string, error) {
+	// nestedSetParent is not backed by a real column. Tempo stores it as a
+	// numeric nested-set index (root spans = -1). We approximate it using
+	// ParentSpanId: empty means root (index -1), non-empty means non-root (>= 0).
+	if attr.Intrinsic == traceql.IntrinsicNestedSetParent {
+		if static.Type == traceql.TypeInt {
+			return transpileNestedSetParentComparison(op, static.IntVal), nil
+		}
+		return "1=1", nil
+	}
+
 	// Intrinsic attributes have first-class columns, no coercion needed
 	if attr.Intrinsic != traceql.IntrinsicNone {
 		col := intrinsicColumnSQL(attr.Intrinsic)
@@ -150,7 +137,7 @@ func (t *transpiler) transpileAttributeComparison(attr *traceql.Attribute, op tr
 	}
 
 	opStr := operatorToSQL(op)
-	val := staticToSQLForMapComparison(static)
+	val := staticToSQLForMap(static)
 
 	// For map attributes, we need type coercion based on the static type
 	switch attr.Scope {
@@ -226,21 +213,12 @@ func mapAccessSQL(mapCol, key string, valType traceql.StaticType) string {
 		return fmt.Sprintf("toInt64OrZero(%s)", access)
 	case traceql.TypeFloat:
 		return fmt.Sprintf("toFloat64OrZero(%s)", access)
+	case traceql.TypeBoolean:
+		// Booleans are stored as 'true'/'false' strings
+		return access
 	default:
 		return access
 	}
-}
-
-// staticToSQLForMapComparison converts a Static to SQL appropriate for
-// comparison with a map attribute (where values are always strings).
-func staticToSQLForMapComparison(s *traceql.Static) string {
-	if s.Type == traceql.TypeBoolean {
-		if s.BoolVal {
-			return "'true'"
-		}
-		return "'false'"
-	}
-	return staticToSQL(s)
 }
 
 // attributeToSQL converts an Attribute to its SQL column representation.
@@ -303,13 +281,12 @@ func intrinsicColumnSQL(i traceql.Intrinsic) string {
 	case traceql.IntrinsicSpanStartTime:
 		return "Timestamp"
 	case traceql.IntrinsicNestedSetParent:
-		// nestedSetParent < 0 means root span (no parent).
-		// Map to -1 for root spans, 1 for non-root spans.
-		return "if(ParentSpanId = '', -1, 1)"
-	case traceql.IntrinsicNestedSetLeft:
-		return "1"
-	case traceql.IntrinsicNestedSetRight:
-		return "2"
+		// nestedSetParent is not a real column; comparisons are handled
+		// specially in transpileAttributeComparison. If we reach here it
+		// means the intrinsic appeared in a context where only a column
+		// name is expected (GROUP BY, SELECT, etc.). Return a no-op
+		// placeholder so the query doesn't break silently.
+		return "0"
 	default:
 		return "SpanName"
 	}
@@ -471,10 +448,68 @@ func aggregateToSQL(a *traceql.Aggregate) string {
 	}
 }
 
-// escapeSQL escapes a string for safe inclusion in a ClickHouse SQL string literal.
-// It escapes both backslashes and single quotes to prevent SQL injection.
+// staticToSQLForMap returns a SQL literal appropriate for comparing against
+// ClickHouse Map(String,String) values. Boolean values are stored as 'true'/'false'
+// strings in map columns, unlike standalone boolean usage (1/0).
+func staticToSQLForMap(s *traceql.Static) string {
+	if s.Type == traceql.TypeBoolean {
+		if s.BoolVal {
+			return "'true'"
+		}
+		return "'false'"
+	}
+	return staticToSQL(s)
+}
+
+// transpileNestedSetParentComparison approximates nestedSetParent predicates
+// using only root-vs-non-root knowledge: roots are -1, non-roots are >= 0.
+func transpileNestedSetParentComparison(op traceql.Operator, rhs int64) string {
+	switch op {
+	case traceql.OpLess:
+		switch {
+		case rhs <= -1:
+			return "1=0"
+		case rhs == 0:
+			return "ParentSpanId = ''"
+		}
+	case traceql.OpLessEqual:
+		switch {
+		case rhs < -1:
+			return "1=0"
+		case rhs == -1:
+			return "ParentSpanId = ''"
+		}
+	case traceql.OpGreaterEqual:
+		switch {
+		case rhs <= -1:
+			return "1=1"
+		case rhs == 0:
+			return "ParentSpanId != ''"
+		}
+	case traceql.OpGreater:
+		switch {
+		case rhs < -1:
+			return "1=1"
+		case rhs == -1:
+			return "ParentSpanId != ''"
+		}
+	case traceql.OpEqual:
+		switch {
+		case rhs < -1:
+			return "1=0"
+		case rhs == -1:
+			return "ParentSpanId = ''"
+		}
+	case traceql.OpNotEqual:
+		if rhs == -1 {
+			return "ParentSpanId != ''"
+		}
+	}
+
+	return "1=1"
+}
+
 func escapeSQL(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "'", "\\'")
-	return s
+	return strings.ReplaceAll(s, "'", "\\'")
 }

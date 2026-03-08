@@ -52,19 +52,10 @@ func (h *TraceHandlers) TraceByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	trace := response.BuildTrace(spans)
-
-	if response.MarshalingFormat(r) == response.HeaderAcceptProtobuf {
-		data, err := response.MarshalTraceProto(trace)
-		if err != nil {
-			h.logger.Error("failed to marshal trace protobuf", "traceID", traceID, "error", err)
-			response.WriteError(w, http.StatusInternalServerError, "internal server error")
-			return
-		}
-		response.WriteProtobuf(w, http.StatusOK, data)
-		return
+	if err := response.WriteTrace(w, r, http.StatusOK, trace); err != nil {
+		h.logger.Error("failed to marshal trace response", "traceID", traceID, "error", err)
+		response.WriteError(w, http.StatusInternalServerError, "internal server error")
 	}
-
-	response.WriteJSON(w, http.StatusOK, trace)
 }
 
 // TraceByIDV2 handles GET /api/v2/traces/{traceID}.
@@ -95,22 +86,14 @@ func (h *TraceHandlers) TraceByIDV2(w http.ResponseWriter, r *http.Request) {
 		trace = response.BuildTrace(spans)
 	}
 
-	if response.MarshalingFormat(r) == response.HeaderAcceptProtobuf && trace != nil {
-		data, err := response.MarshalTraceByIDResponseProto(trace)
-		if err != nil {
-			h.logger.Error("failed to marshal trace protobuf", "traceID", traceID, "error", err)
-			response.WriteError(w, http.StatusInternalServerError, "internal server error")
-			return
-		}
-		response.WriteProtobuf(w, http.StatusOK, data)
-		return
-	}
-
 	resp := &response.TraceByIDResponse{
 		Trace:  trace,
 		Status: "complete",
 	}
-	response.WriteJSON(w, http.StatusOK, resp)
+	if err := response.WriteTraceByIDResponse(w, r, http.StatusOK, resp); err != nil {
+		h.logger.Error("failed to marshal trace-by-id response", "traceID", traceID, "error", err)
+		response.WriteError(w, http.StatusInternalServerError, "internal server error")
+	}
 }
 
 // normalizeTraceID strips hyphens and lowercases the trace ID.

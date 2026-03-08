@@ -313,7 +313,7 @@ func (t *transpiler) transpileSetOperation(op *traceql.SpansetOperation) (string
 	case traceql.OpSpansetAnd:
 		return fmt.Sprintf("%s\nINTERSECT\n%s", lhsSQL, rhsSQL), nil
 	case traceql.OpSpansetUnion:
-		return fmt.Sprintf("%s\nUNION\n%s", lhsSQL, rhsSQL), nil
+		return fmt.Sprintf("%s\nUNION DISTINCT\n%s", lhsSQL, rhsSQL), nil
 	default:
 		return "", fmt.Errorf("unsupported set operator: %s", op.Op)
 	}
@@ -481,8 +481,7 @@ func (t *transpiler) transpileStructuralSibling(op *traceql.SpansetOperation) (s
 		"SELECT DISTINCT s1.TraceId FROM %s s1 "+
 			"JOIN %s s2 ON s1.TraceId = s2.TraceId "+
 			"AND s1.ParentSpanId = s2.ParentSpanId "+
-			"AND s1.SpanId != s2.SpanId "+
-			"WHERE %s AND %s AND s1.ParentSpanId != '' AND %s AND %s LIMIT %d",
+			"WHERE %s AND %s AND s1.ParentSpanId != '' AND s1.SpanId != s2.SpanId AND %s AND %s LIMIT %d",
 		t.opts.Table, t.opts.Table,
 		t.replaceColumnsWithAlias(lhsCond, "s1"),
 		t.replaceColumnsWithAlias(rhsCond, "s2"),
@@ -536,7 +535,7 @@ func (t *transpiler) transpileStructuralUnion(op *traceql.SpansetOperation, posi
 	}
 
 	return fmt.Sprintf(
-		"%s\nUNION\n%s",
+		"%s\nUNION DISTINCT\n%s",
 		lhsSQL, positiveQuery,
 	), nil
 }
