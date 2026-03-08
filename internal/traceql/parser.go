@@ -3,6 +3,7 @@ package traceql
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -136,7 +137,11 @@ func (p *parser) parsePipelineElement() (PipelineElement, error) {
 	case tokenOpenBrace:
 		return p.parseSpansetExpression()
 	case tokenOpenParen:
-		return p.parseWrappedScalarFilter()
+		lhs, err := p.parseWrappedScalarFilter()
+		if err != nil {
+			return nil, err
+		}
+		return p.tryChainSpansetOps(lhs)
 	case tokenCount, tokenMin, tokenMax, tokenSum, tokenAvg:
 		return p.parseAggregateOrScalarFilter()
 	case tokenRate, tokenCountOverTime, tokenMinOverTime, tokenMaxOverTime,
@@ -167,13 +172,21 @@ func (p *parser) parseSpansetExpression() (PipelineElement, error) {
 		return nil, err
 	}
 
+	return p.tryChainSpansetOps(lhs)
+}
+
+// tryChainSpansetOps repeatedly checks for a spanset-level operator and,
+// if found, parses the right-hand operand and wraps the result in a
+// SpansetOperation. It accepts an already-parsed left-hand side so both
+// { filter } and ( pipeline ) can serve as the initial operand.
+func (p *parser) tryChainSpansetOps(lhs PipelineElement) (PipelineElement, error) {
 	for {
 		op, ok := p.trySpansetOperator()
 		if !ok {
 			break
 		}
 
-		rhs, err := p.parseSpansetPrimary()
+		rhs, err := p.parseSpansetOperand()
 		if err != nil {
 			return nil, err
 		}
@@ -188,6 +201,15 @@ func (p *parser) parseSpansetExpression() (PipelineElement, error) {
 	return lhs, nil
 }
 
+// parseSpansetOperand parses either a { filter } block or a ( pipeline )
+// group as an operand for spanset-level operators.
+func (p *parser) parseSpansetOperand() (PipelineElement, error) {
+	if p.peek() == tokenOpenParen {
+		return p.parseWrappedScalarFilter()
+	}
+	return p.parseSpansetPrimary()
+}
+
 // trySpansetOperator tries to consume a spanset-level operator.
 // These are && and || when they appear between { } blocks, and structural operators.
 func (p *parser) trySpansetOperator() (Operator, bool) {
@@ -200,16 +222,24 @@ func (p *parser) trySpansetOperator() (Operator, bool) {
 		p.advance()
 		return OpSpansetUnion, true
 	case tokenGt:
-		// Could be structural child operator between spansets
-		if p.peekAt(1) == tokenOpenBrace {
+		next := p.peekAt(1)
+		if next == tokenOpenBrace || next == tokenOpenParen {
 			p.advance()
 			return OpSpansetChild, true
 		}
 		return OpNone, false
 	case tokenLt:
-		if p.peekAt(1) == tokenOpenBrace {
+		next := p.peekAt(1)
+		if next == tokenOpenBrace || next == tokenOpenParen {
 			p.advance()
 			return OpSpansetParent, true
+		}
+		return OpNone, false
+	case tokenNotRegex:
+		next := p.peekAt(1)
+		if next == tokenOpenBrace || next == tokenOpenParen {
+			p.advance()
+			return OpSpansetNotSibling, true
 		}
 		return OpNone, false
 	case tokenGtGt:
@@ -265,9 +295,36 @@ func (p *parser) parseSpansetPrimary() (PipelineElement, error) {
 		return &SpansetFilter{Expression: nil}, nil
 	}
 
-	expr, err := p.parseFieldExpression()
-	if err != nil {
-		return nil, err
+	// Handle leading && or || (e.g., { && true } from Grafana Drilldown).
+	// The implicit left operand is true (match all spans).
+	// We must respect && > || precedence, matching parseOr/parseAnd.
+	var expr FieldExpression
+	if p.peek() == tokenAnd || p.peek() == tokenOr {
+		expr = &Static{Type: TypeBoolean, BoolVal: true}
+		// Bind && first (higher precedence)
+		for p.peek() == tokenAnd {
+			p.advance()
+			rhs, err := p.parseComparison()
+			if err != nil {
+				return nil, err
+			}
+			expr = &BinaryOperation{Op: OpAnd, LHS: expr, RHS: rhs}
+		}
+		// Then bind || (lower precedence), delegating to parseAnd for RHS
+		for p.peek() == tokenOr {
+			p.advance()
+			rhs, err := p.parseAnd()
+			if err != nil {
+				return nil, err
+			}
+			expr = &BinaryOperation{Op: OpOr, LHS: expr, RHS: rhs}
+		}
+	} else {
+		var err error
+		expr, err = p.parseFieldExpression()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if _, err := p.expect(tokenCloseBrace); err != nil {
@@ -320,8 +377,9 @@ func (p *parser) parseWrappedScalarFilter() (PipelineElement, error) {
 		return nil, fmt.Errorf("expected ')': %w", err)
 	}
 
-	// The wrapped pipeline should end with an aggregate, then we compare
-	if op, ok := p.tryComparisonOp(); ok {
+	// Skip comparison when > or < is followed by { or ( — that's a spanset operator,
+	// not a scalar comparison, and will be handled by tryChainSpansetOps.
+	if op, ok := p.tryWrappedComparisonOp(); ok {
 		rhs, err := p.parseScalarOperand()
 		if err != nil {
 			return nil, err
@@ -401,6 +459,20 @@ func (p *parser) parseScalarOperand() (ScalarExpression, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// tryWrappedComparisonOp is like tryComparisonOp but refuses to consume > or <
+// when the following token is { or (, because that indicates a spanset structural
+// operator rather than a scalar comparison.
+func (p *parser) tryWrappedComparisonOp() (Operator, bool) {
+	tok := p.peek()
+	if tok == tokenGt || tok == tokenLt {
+		next := p.peekAt(1)
+		if next == tokenOpenBrace || next == tokenOpenParen {
+			return OpNone, false
+		}
+	}
+	return p.tryComparisonOp()
 }
 
 func (p *parser) tryComparisonOp() (Operator, bool) {
@@ -1103,19 +1175,32 @@ func (p *parser) parseStatic() (*Static, error) {
 }
 
 // parseDuration handles Go-style durations plus 'd' for days.
+// It supports multi-part durations like "1d12h" or "2d30m".
 func parseDuration(s string) (time.Duration, error) {
-	// Handle 'd' (day) suffix by converting to hours
-	if len(s) > 0 && s[len(s)-1] == 'd' {
-		// Extract the number before 'd'
-		numStr := s[:len(s)-1]
-		v, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid day duration: %w", err)
-		}
-		return time.Duration(v * 24 * float64(time.Hour)), nil
+	// Check if the string contains 'd' for days
+	dIdx := strings.IndexByte(s, 'd')
+	if dIdx < 0 {
+		// No days component — delegate to Go's time.ParseDuration
+		return time.ParseDuration(s)
 	}
 
-	// Handle 'ns' by checking for it specifically since 'n' alone would be ambiguous
-	// Go's time.ParseDuration handles ns, us/µs, ms, s, m, h natively
-	return time.ParseDuration(s)
+	// Extract the number before 'd'
+	numStr := s[:dIdx]
+	v, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid day duration: %w", err)
+	}
+	dayDuration := time.Duration(v * 24 * float64(time.Hour))
+
+	// Check for remaining duration parts after 'd' (e.g., "12h" in "1d12h")
+	remainder := s[dIdx+1:]
+	if remainder == "" {
+		return dayDuration, nil
+	}
+
+	restDuration, err := time.ParseDuration(remainder)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration after days: %w", err)
+	}
+	return dayDuration + restDuration, nil
 }

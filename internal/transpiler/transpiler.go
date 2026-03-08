@@ -73,6 +73,8 @@ func applyHints(root *traceql.RootExpr, opts *TranspileOptions) {
 				opts.SampleRate = h.Value.FloatVal
 			case traceql.TypeInt:
 				opts.SampleRate = float64(h.Value.IntVal) / 100.0
+			case traceql.TypeBoolean:
+				// sample=true from Grafana drilldown; no specific rate requested
 			}
 		case "prewhere":
 			if h.Value.Type == traceql.TypeBoolean {
@@ -311,7 +313,7 @@ func (t *transpiler) transpileSetOperation(op *traceql.SpansetOperation) (string
 	case traceql.OpSpansetAnd:
 		return fmt.Sprintf("%s\nINTERSECT\n%s", lhsSQL, rhsSQL), nil
 	case traceql.OpSpansetUnion:
-		return fmt.Sprintf("%s\nUNION\n%s", lhsSQL, rhsSQL), nil
+		return fmt.Sprintf("%s\nUNION DISTINCT\n%s", lhsSQL, rhsSQL), nil
 	default:
 		return "", fmt.Errorf("unsupported set operator: %s", op.Op)
 	}
@@ -479,8 +481,7 @@ func (t *transpiler) transpileStructuralSibling(op *traceql.SpansetOperation) (s
 		"SELECT DISTINCT s1.TraceId FROM %s s1 "+
 			"JOIN %s s2 ON s1.TraceId = s2.TraceId "+
 			"AND s1.ParentSpanId = s2.ParentSpanId "+
-			"AND s1.SpanId != s2.SpanId "+
-			"WHERE %s AND %s AND s1.ParentSpanId != '' AND %s AND %s LIMIT %d",
+			"WHERE %s AND %s AND s1.ParentSpanId != '' AND s1.SpanId != s2.SpanId AND %s AND %s LIMIT %d",
 		t.opts.Table, t.opts.Table,
 		t.replaceColumnsWithAlias(lhsCond, "s1"),
 		t.replaceColumnsWithAlias(rhsCond, "s2"),
@@ -534,7 +535,7 @@ func (t *transpiler) transpileStructuralUnion(op *traceql.SpansetOperation, posi
 	}
 
 	return fmt.Sprintf(
-		"%s\nUNION\n%s",
+		"%s\nUNION DISTINCT\n%s",
 		lhsSQL, positiveQuery,
 	), nil
 }
@@ -556,10 +557,9 @@ func (t *transpiler) aliasedTimeFilter(alias string) string {
 
 // replaceColumnsWithAlias prefixes known ClickHouse column names with a table alias.
 // This is needed for JOINs where both sides reference the same table.
+// It skips replacements inside single-quoted string literals to avoid corrupting
+// user-provided values that happen to match column names.
 func (t *transpiler) replaceColumnsWithAlias(sql, alias string) string {
-	// Replace known column references with aliased versions.
-	// We must be careful not to replace columns inside function calls
-	// or string literals. A simple approach works for our generated SQL.
 	replacer := strings.NewReplacer(
 		"SpanAttributes[", alias+".SpanAttributes[",
 		"ResourceAttributes[", alias+".ResourceAttributes[",
@@ -571,12 +571,55 @@ func (t *transpiler) replaceColumnsWithAlias(sql, alias string) string {
 		"SpanKind", alias+".SpanKind",
 		"TraceId", alias+".TraceId",
 		"SpanId", alias+".SpanId",
+		"if(ParentSpanId", "if("+alias+".ParentSpanId",
 		"ParentSpanId", alias+".ParentSpanId",
 		"ScopeName", alias+".ScopeName",
 		"ScopeVersion", alias+".ScopeVersion",
 		"Timestamp", alias+".Timestamp",
 	)
-	return replacer.Replace(sql)
+	return replaceOutsideStrings(sql, replacer)
+}
+
+// replaceOutsideStrings applies a strings.Replacer only to segments of the SQL
+// that are outside single-quoted string literals. This prevents column name
+// replacement from corrupting user-provided string values.
+func replaceOutsideStrings(sql string, replacer *strings.Replacer) string {
+	var result strings.Builder
+	result.Grow(len(sql))
+
+	i := 0
+	for i < len(sql) {
+		quoteIdx := strings.IndexByte(sql[i:], '\'')
+		if quoteIdx == -1 {
+			// No more quotes — replace the rest and done.
+			result.WriteString(replacer.Replace(sql[i:]))
+			break
+		}
+
+		// Replace the segment before the quote.
+		result.WriteString(replacer.Replace(sql[i : i+quoteIdx]))
+		i += quoteIdx
+
+		// Find the closing quote, handling escaped quotes (\').
+		j := i + 1
+		for j < len(sql) {
+			if sql[j] == '\\' {
+				j += 2 // skip escaped character
+				continue
+			}
+			if sql[j] == '\'' {
+				j++ // include closing quote
+				break
+			}
+			j++
+		}
+
+		// Write the quoted string verbatim (no replacements).
+		result.WriteString(sql[i:j])
+		i = j
+	}
+
+	return result.String()
 }
 
 // transpileScalarFilter generates SQL for aggregate comparisons like count() > 5.

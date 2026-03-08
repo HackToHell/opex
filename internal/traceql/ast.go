@@ -336,6 +336,9 @@ const (
 	IntrinsicParent
 	// IntrinsicSpanStartTime represents span start time.
 	IntrinsicSpanStartTime
+	// IntrinsicNestedSetParent is Tempo's nested-set parent index.
+	// Root spans have nestedSetParent = -1; non-root spans >= 0.
+	IntrinsicNestedSetParent
 )
 
 var intrinsicStrings = map[Intrinsic]string{
@@ -359,6 +362,7 @@ var intrinsicStrings = map[Intrinsic]string{
 	IntrinsicInstrumentationVersion: "instrumentation:version",
 	IntrinsicParent:                 "parent",
 	IntrinsicSpanStartTime:          "spanStartTime",
+	IntrinsicNestedSetParent:        "nestedSetParent",
 }
 
 func (i Intrinsic) String() string {
@@ -777,6 +781,7 @@ var intrinsicFromString = map[string]Intrinsic{
 	"instrumentation:name":    IntrinsicInstrumentationName,
 	"instrumentation:version": IntrinsicInstrumentationVersion,
 	"parent":                  IntrinsicParent,
+	"nestedSetParent":         IntrinsicNestedSetParent,
 }
 
 // LookupIntrinsic returns the Intrinsic for a given string, or IntrinsicNone.

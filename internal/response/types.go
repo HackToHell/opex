@@ -209,11 +209,24 @@ type QueryRangeResponse struct {
 
 // TimeSeries is a single time series.
 type TimeSeries struct {
-	Labels  []Label  `json:"labels"`
-	Samples []Sample `json:"samples"`
+	Labels     []SeriesLabel `json:"labels"`
+	PromLabels string        `json:"promLabels,omitempty"`
+	Samples    []Sample      `json:"samples"`
 }
 
-// Label is a key-value label.
+// SeriesLabel is a Tempo-compatible label with AnyValue-typed value,
+// matching the protobuf JSON format expected by Grafana's Tempo datasource.
+type SeriesLabel struct {
+	Key   string              `json:"key"`
+	Value SeriesLabelAnyValue `json:"value"`
+}
+
+// SeriesLabelAnyValue matches Tempo's AnyValue protobuf JSON encoding.
+type SeriesLabelAnyValue struct {
+	StringValue string `json:"stringValue,omitempty"`
+}
+
+// Label is a simple key-value label for summary endpoints.
 type Label struct {
 	Key   string `json:"key"`
 	Value string `json:"value,omitempty"`
@@ -233,8 +246,9 @@ type QueryInstantResponse struct {
 
 // InstantSeries is a single instant result.
 type InstantSeries struct {
-	Labels []Label `json:"labels"`
-	Value  float64 `json:"value"`
+	Labels     []SeriesLabel `json:"labels"`
+	PromLabels string        `json:"promLabels,omitempty"`
+	Value      float64       `json:"value"`
 }
 
 // SpanMetricsSummaryResponse is the response for /api/metrics/summary.

@@ -90,12 +90,16 @@ func (h *MetricsHandlers) QueryRange(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = rows.Close() }()
 
-	// Build label names from by() clause
+	// Build label names from by() clause or histogram bucket
 	var labelNames []string
-	for _, attr := range metricsElem.By {
-		alias := strings.ReplaceAll(attr.String(), ".", "_")
-		alias = strings.ReplaceAll(alias, ":", "_")
-		labelNames = append(labelNames, alias)
+	if metricsElem.Op == traceql.MetricsAggregateHistogramOverTime {
+		labelNames = []string{"le"}
+	} else {
+		for _, attr := range metricsElem.By {
+			alias := strings.ReplaceAll(attr.String(), ".", "_")
+			alias = strings.ReplaceAll(alias, ":", "_")
+			labelNames = append(labelNames, alias)
+		}
 	}
 
 	// Parse results into time series
@@ -195,11 +199,17 @@ func (h *MetricsHandlers) QueryInstant(w http.ResponseWriter, r *http.Request) {
 				is.Value = *v
 			}
 		}
+		var promParts []string
 		for i, key := range labelIndices {
-			is.Labels = append(is.Labels, response.Label{
+			val := *scanArgs[i].(*string)
+			is.Labels = append(is.Labels, response.SeriesLabel{
 				Key:   key,
-				Value: *scanArgs[i].(*string),
+				Value: response.SeriesLabelAnyValue{StringValue: val},
 			})
+			promParts = append(promParts, fmt.Sprintf("%s=%q", key, val))
+		}
+		if len(promParts) > 0 {
+			is.PromLabels = "{" + strings.Join(promParts, ", ") + "}"
 		}
 		series = append(series, is)
 	}
@@ -384,6 +394,28 @@ func extractMetricsAggregate(root *traceql.RootExpr) (*traceql.MetricsAggregate,
 	return nil, nil
 }
 
+// histogramBucketNanos defines exponential duration bucket boundaries in nanoseconds
+// for histogram_over_time. Spans are categorized by their upper-bound bucket.
+var histogramBucketNanos = []struct {
+	nanos int64
+	label string
+}{
+	{2_000_000, "2ms"},
+	{4_000_000, "4ms"},
+	{8_000_000, "8ms"},
+	{16_000_000, "16ms"},
+	{32_000_000, "32ms"},
+	{64_000_000, "64ms"},
+	{128_000_000, "128ms"},
+	{256_000_000, "256ms"},
+	{512_000_000, "512ms"},
+	{1_024_000_000, "1.024s"},
+	{2_048_000_000, "2.048s"},
+	{4_096_000_000, "4.096s"},
+	{8_192_000_000, "8.192s"},
+	{16_384_000_000, "16.384s"},
+}
+
 func (h *MetricsHandlers) buildMetricsRangeSQL(m *traceql.MetricsAggregate, filterSQL string, start, end time.Time, step time.Duration) string {
 	stepSeconds := int(step.Seconds())
 	if stepSeconds < 1 {
@@ -393,7 +425,16 @@ func (h *MetricsHandlers) buildMetricsRangeSQL(m *traceql.MetricsAggregate, filt
 	timeFilter := fmt.Sprintf("Timestamp >= fromUnixTimestamp64Nano(%d) AND Timestamp <= fromUnixTimestamp64Nano(%d)",
 		start.UnixNano(), end.UnixNano())
 
-	// Determine aggregation expression
+	where := timeFilter
+	if filterSQL != "" {
+		where = fmt.Sprintf("%s AND TraceId IN (%s)", timeFilter, filterSQL)
+	}
+
+	// Histogram needs special handling: group by time AND duration bucket
+	if m.Op == traceql.MetricsAggregateHistogramOverTime {
+		return h.buildHistogramSQL(where, stepSeconds)
+	}
+
 	var aggExpr string
 	switch m.Op {
 	case traceql.MetricsAggregateRate:
@@ -418,7 +459,6 @@ func (h *MetricsHandlers) buildMetricsRangeSQL(m *traceql.MetricsAggregate, filt
 		aggExpr = "count(*)"
 	}
 
-	// Build by() group columns
 	var groupByCols []string
 	var selectLabels []string
 	groupByCols = append(groupByCols, "ts")
@@ -436,19 +476,37 @@ func (h *MetricsHandlers) buildMetricsRangeSQL(m *traceql.MetricsAggregate, filt
 	}
 	selectParts = append(selectParts, selectLabels...)
 
-	where := timeFilter
-	// If we have a filter pipeline, we'd integrate it here
-	// For now, use a simple approach
-	if filterSQL != "" {
-		// Extract the TraceId filter from the sub-query
-		where = fmt.Sprintf("%s AND TraceId IN (%s)", timeFilter, filterSQL)
-	}
-
 	return fmt.Sprintf("SELECT %s FROM %s WHERE %s GROUP BY %s ORDER BY ts",
 		strings.Join(selectParts, ", "),
 		h.ch.Table(),
 		where,
 		strings.Join(groupByCols, ", "),
+	)
+}
+
+// buildHistogramSQL generates a query that buckets spans by duration
+// to produce a histogram compatible with Grafana's heatmap visualization.
+// Buckets are ordered by a numeric key so that "16ms" sorts before "128ms".
+func (h *MetricsHandlers) buildHistogramSQL(where string, stepSeconds int) string {
+	var labelCases, orderCases []string
+	for i, b := range histogramBucketNanos {
+		labelCases = append(labelCases, fmt.Sprintf("Duration <= %d, '%s'", b.nanos, b.label))
+		orderCases = append(orderCases, fmt.Sprintf("Duration <= %d, %d", b.nanos, i))
+	}
+	labelExpr := fmt.Sprintf("multiIf(%s, '+Inf')", strings.Join(labelCases, ", "))
+	orderExpr := fmt.Sprintf("multiIf(%s, %d)", strings.Join(orderCases, ", "), len(histogramBucketNanos))
+
+	// Wrap in a subquery so the outer SELECT only exposes ts, value, label_le
+	// (matching what parseRangeRows expects), while still sorting by bucket_ord.
+	return fmt.Sprintf(
+		"SELECT ts, value, label_le FROM ("+
+			"SELECT toStartOfInterval(Timestamp, INTERVAL %d SECOND) AS ts, "+
+			"toFloat64(count(*)) AS value, "+
+			"%s AS label_le, "+
+			"%s AS bucket_ord "+
+			"FROM %s WHERE %s GROUP BY ts, label_le, bucket_ord ORDER BY ts, bucket_ord"+
+			")",
+		stepSeconds, labelExpr, orderExpr, h.ch.Table(), where,
 	)
 }
 
@@ -483,13 +541,22 @@ func (h *MetricsHandlers) parseRangeRows(rows interface {
 
 		ts2, ok := seriesMap[key]
 		if !ok {
-			var labels []response.Label
+			var labels []response.SeriesLabel
+			var promParts []string
 			for i, name := range labelNames {
 				if i < len(labelVals) {
-					labels = append(labels, response.Label{Key: name, Value: labelVals[i]})
+					labels = append(labels, response.SeriesLabel{
+						Key:   name,
+						Value: response.SeriesLabelAnyValue{StringValue: labelVals[i]},
+					})
+					promParts = append(promParts, fmt.Sprintf("%s=%q", name, labelVals[i]))
 				}
 			}
-			ts2 = &response.TimeSeries{Labels: labels}
+			promLabels := ""
+			if len(promParts) > 0 {
+				promLabels = "{" + strings.Join(promParts, ", ") + "}"
+			}
+			ts2 = &response.TimeSeries{Labels: labels, PromLabels: promLabels}
 			seriesMap[key] = ts2
 			order = append(order, key)
 		}

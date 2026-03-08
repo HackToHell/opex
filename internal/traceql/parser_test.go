@@ -105,6 +105,20 @@ func TestParseIntrinsicKind(t *testing.T) {
 	}
 }
 
+func TestParseIntrinsicNestedSetParent(t *testing.T) {
+	root := mustParse(t, "{ nestedSetParent >= -1 }")
+	sf := root.Pipeline.Elements[0].(*SpansetFilter)
+	bin := sf.Expression.(*BinaryOperation)
+	attr := bin.LHS.(*Attribute)
+	if attr.Intrinsic != IntrinsicNestedSetParent {
+		t.Fatalf("expected IntrinsicNestedSetParent, got %v", attr.Intrinsic)
+	}
+	static := bin.RHS.(*Static)
+	if static.Type != TypeInt || static.IntVal != -1 {
+		t.Fatalf("expected int -1, got %v %d", static.Type, static.IntVal)
+	}
+}
+
 func TestParseScopedAttribute(t *testing.T) {
 	root := mustParse(t, `{ resource.service.name = "frontend" }`)
 	sf := root.Pipeline.Elements[0].(*SpansetFilter)
@@ -294,6 +308,9 @@ func TestParseDurations(t *testing.T) {
 		{"{ duration > 1m }", time.Minute},
 		{"{ duration > 100us }", 100 * time.Microsecond},
 		{"{ duration > 100ns }", 100 * time.Nanosecond},
+		{"{ duration > 1d }", 24 * time.Hour},
+		{"{ duration > 1d12h }", 36 * time.Hour},
+		{"{ duration > 2d30m }", 48*time.Hour + 30*time.Minute},
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
@@ -674,5 +691,63 @@ func TestParseMaxAggregate(t *testing.T) {
 	agg := sf.LHS.(*Aggregate)
 	if agg.Op != AggregateMax {
 		t.Fatalf("expected AggregateMax, got %v", agg.Op)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Spanset expressions — full coverage from Tempo test_examples.yaml L93
+// ---------------------------------------------------------------------------
+
+func TestParseAllSpansetExpressions(t *testing.T) {
+	tests := []struct {
+		name   string
+		query  string
+		wantOp Operator
+	}{
+		{"and", `{ true } && { true }`, OpSpansetAnd},
+		{"union", `{ true } || { true }`, OpSpansetUnion},
+		{"descendant", `{ true } >> { true }`, OpSpansetDescendant},
+		{"ancestor", `{ true } << { true }`, OpSpansetAncestor},
+		{"child", `{ true } > { true }`, OpSpansetChild},
+		{"parent", `{ true } < { true }`, OpSpansetParent},
+		{"sibling", `{ true } ~ { true }`, OpSpansetSibling},
+		{"not_child", `{ true } !> { true }`, OpSpansetNotChild},
+		{"not_parent", `{ true } !< { true }`, OpSpansetNotParent},
+		{"not_sibling", `{ true } !~ { true }`, OpSpansetNotSibling},
+		{"not_descendant", `{ true } !>> { true }`, OpSpansetNotDescendant},
+		{"not_ancestor", `{ true } !<< { true }`, OpSpansetNotAncestor},
+		{"union_child", `{ true } &> { true }`, OpSpansetUnionChild},
+		{"union_parent", `{ true } &< { true }`, OpSpansetUnionParent},
+		{"union_sibling", `{ true } &~ { true }`, OpSpansetUnionSibling},
+		{"union_descendant", `{ true } &>> { true }`, OpSpansetUnionDescendant},
+		{"union_ancestor", `{ true } &<< { true }`, OpSpansetUnionAncestor},
+		{"pipeline_descendant", `({ true } | count() > 1 | { false }) >> ({ true } | count() > 1 | { false })`, OpSpansetDescendant},
+		{"pipeline_child", `({ true } | count() > 1 | { false }) > ({ true } | count() > 1 | { false })`, OpSpansetChild},
+		{"pipeline_sibling", `({ true } | count() > 1 | { false }) ~ ({ true } | count() > 1 | { false })`, OpSpansetSibling},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := mustParse(t, tc.query)
+			if len(root.Pipeline.Elements) == 0 {
+				t.Fatalf("expected at least one pipeline element")
+			}
+			sop, ok := root.Pipeline.Elements[0].(*SpansetOperation)
+			if !ok {
+				t.Fatalf("expected *SpansetOperation, got %T", root.Pipeline.Elements[0])
+			}
+			if sop.Op != tc.wantOp {
+				t.Errorf("operator = %v, want %v", sop.Op, tc.wantOp)
+			}
+		})
+	}
+}
+
+func TestParseNotSiblingRegexStillWorks(t *testing.T) {
+	root := mustParse(t, `{ name !~ "internal.*" }`)
+	sf := root.Pipeline.Elements[0].(*SpansetFilter)
+	bin := sf.Expression.(*BinaryOperation)
+	if bin.Op != OpNotRegex {
+		t.Fatalf("expected OpNotRegex, got %v", bin.Op)
 	}
 }
