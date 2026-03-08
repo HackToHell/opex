@@ -87,12 +87,17 @@ func (c *Client) Exec(ctx context.Context, sql string, args ...any) error {
 // Query executes a query and returns rows.
 // If the config has a ReadTimeout, a deadline is applied to the context.
 func (c *Client) Query(ctx context.Context, sql string, args ...any) (driver.Rows, error) {
-	// Apply query timeout if configured and context has no existing deadline
+	// Apply query timeout if configured and context has no existing deadline.
+	// We intentionally do NOT defer cancel() here because the returned
+	// driver.Rows outlives this function — callers iterate rows after
+	// Query() returns. Deferring cancel would kill the context mid-read.
+	// The timer goroutine is cleaned up when the timeout fires or the
+	// parent context is cancelled (e.g., HTTP request completes).
 	if c.cfg.ReadTimeout > 0 {
 		if _, ok := ctx.Deadline(); !ok {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, c.cfg.ReadTimeout)
-			_ = cancel // caller is responsible for cancel via rows.Close or context
+			_ = cancel
 		}
 	}
 

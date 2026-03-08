@@ -112,6 +112,18 @@ func (t *transpiler) timeFilter() string {
 		t.opts.Start.UnixNano(), t.opts.End.UnixNano())
 }
 
+// needsSpanRows reports whether the given pipeline element needs span-level
+// rows (not just distinct TraceIds) from its upstream CTE. Aggregates and
+// metrics aggregates need to count/measure individual spans.
+func needsSpanRows(elem traceql.PipelineElement) bool {
+	switch elem.(type) {
+	case *traceql.ScalarFilter, *traceql.Aggregate, *traceql.MetricsAggregate:
+		return true
+	default:
+		return false
+	}
+}
+
 // transpilePipeline handles the full pipeline.
 func (t *transpiler) transpilePipeline(p *traceql.Pipeline) (string, error) {
 	if len(p.Elements) == 0 {
@@ -121,7 +133,7 @@ func (t *transpiler) transpilePipeline(p *traceql.Pipeline) (string, error) {
 
 	// Single element pipeline (most common case)
 	if len(p.Elements) == 1 {
-		return t.transpileElement(p.Elements[0], "")
+		return t.transpileElement(p.Elements[0], "", false)
 	}
 
 	// Multi-stage pipeline: use CTEs
@@ -131,7 +143,14 @@ func (t *transpiler) transpilePipeline(p *traceql.Pipeline) (string, error) {
 	for i, elem := range p.Elements {
 		isLast := i == len(p.Elements)-1
 
-		sql, err := t.transpileElement(elem, prevCTE)
+		// Look ahead: if the next element needs span-level rows,
+		// this element must produce them (no DISTINCT).
+		spanLevel := false
+		if !isLast && needsSpanRows(p.Elements[i+1]) {
+			spanLevel = true
+		}
+
+		sql, err := t.transpileElement(elem, prevCTE, spanLevel)
 		if err != nil {
 			return "", fmt.Errorf("pipeline stage %d: %w", i, err)
 		}
@@ -155,12 +174,15 @@ func (t *transpiler) transpilePipeline(p *traceql.Pipeline) (string, error) {
 }
 
 // transpileElement dispatches to the appropriate handler.
-func (t *transpiler) transpileElement(elem traceql.PipelineElement, prevCTE string) (string, error) {
+// spanLevel indicates whether the element should produce span-level rows
+// (all matching spans) rather than distinct TraceIds. This is set when
+// the next pipeline stage needs to aggregate over individual spans.
+func (t *transpiler) transpileElement(elem traceql.PipelineElement, prevCTE string, spanLevel bool) (string, error) {
 	switch e := elem.(type) {
 	case *traceql.SpansetFilter:
-		return t.transpileSpansetFilter(e, prevCTE)
+		return t.transpileSpansetFilter(e, prevCTE, spanLevel)
 	case *traceql.SpansetOperation:
-		return t.transpileSpansetOperation(e)
+		return t.transpileSpansetOperation(e, prevCTE)
 	case *traceql.ScalarFilter:
 		return t.transpileScalarFilter(e, prevCTE)
 	case *traceql.Aggregate:
@@ -170,6 +192,9 @@ func (t *transpiler) transpileElement(elem traceql.PipelineElement, prevCTE stri
 	case *traceql.CoalesceOperation:
 		// Coalesce is a no-op in SQL context (traces are already grouped by TraceId)
 		if prevCTE != "" {
+			if spanLevel {
+				return fmt.Sprintf("SELECT * FROM %s", prevCTE), nil
+			}
 			return fmt.Sprintf("SELECT DISTINCT TraceId FROM %s", prevCTE), nil
 		}
 		return fmt.Sprintf("SELECT DISTINCT TraceId FROM %s WHERE %s", t.opts.Table, t.mustTimeFilter()), nil
@@ -199,7 +224,10 @@ func (t *transpiler) mustTimeFilter() string {
 }
 
 // transpileSpansetFilter generates SQL for a { expression } filter.
-func (t *transpiler) transpileSpansetFilter(f *traceql.SpansetFilter, prevCTE string) (string, error) {
+// When spanLevel is true, the query returns all matching span rows (SELECT *)
+// instead of SELECT DISTINCT TraceId. This is needed when the next pipeline
+// stage aggregates over individual spans (e.g., count(), avg(duration)).
+func (t *transpiler) transpileSpansetFilter(f *traceql.SpansetFilter, prevCTE string, spanLevel bool) (string, error) {
 	var timeConditions []string
 	var filterConditions []string
 
@@ -220,6 +248,20 @@ func (t *transpiler) transpileSpansetFilter(f *traceql.SpansetFilter, prevCTE st
 	// Build the SAMPLE clause
 	sampleClause := t.sampleClause()
 
+	// Determine SELECT and LIMIT based on whether downstream needs span rows.
+	// Span-level CTEs use a large safety limit to prevent unbounded scans
+	// while preserving enough rows for correct aggregation.
+	selectClause := "SELECT DISTINCT TraceId"
+	limitClause := fmt.Sprintf(" LIMIT %d", t.opts.Limit)
+	if spanLevel {
+		selectClause = "SELECT *"
+		safetyLimit := t.opts.Limit * 1000
+		if safetyLimit < 100000 {
+			safetyLimit = 100000
+		}
+		limitClause = fmt.Sprintf(" LIMIT %d", safetyLimit)
+	}
+
 	// Build the query with optional PREWHERE
 	if t.opts.UsePrewhere && len(timeConditions) > 0 {
 		prewhere := strings.Join(timeConditions, " AND ")
@@ -229,11 +271,11 @@ func (t *transpiler) transpileSpansetFilter(f *traceql.SpansetFilter, prevCTE st
 		}
 
 		if prevCTE != "" {
-			return fmt.Sprintf("SELECT DISTINCT TraceId FROM %s%s PREWHERE %s WHERE TraceId IN (SELECT TraceId FROM %s) AND %s LIMIT %d",
-				t.opts.Table, sampleClause, prewhere, prevCTE, where, t.opts.Limit), nil
+			return fmt.Sprintf("%s FROM %s%s PREWHERE %s WHERE TraceId IN (SELECT TraceId FROM %s) AND %s%s",
+				selectClause, t.opts.Table, sampleClause, prewhere, prevCTE, where, limitClause), nil
 		}
-		return fmt.Sprintf("SELECT DISTINCT TraceId FROM %s%s PREWHERE %s WHERE %s LIMIT %d",
-			t.opts.Table, sampleClause, prewhere, where, t.opts.Limit), nil
+		return fmt.Sprintf("%s FROM %s%s PREWHERE %s WHERE %s%s",
+			selectClause, t.opts.Table, sampleClause, prewhere, where, limitClause), nil
 	}
 
 	// Standard path: combine all conditions into WHERE
@@ -246,52 +288,52 @@ func (t *transpiler) transpileSpansetFilter(f *traceql.SpansetFilter, prevCTE st
 	}
 
 	if prevCTE != "" {
-		return fmt.Sprintf("SELECT DISTINCT TraceId FROM %s%s WHERE TraceId IN (SELECT TraceId FROM %s) AND %s LIMIT %d",
-			t.opts.Table, sampleClause, prevCTE, where, t.opts.Limit), nil
+		return fmt.Sprintf("%s FROM %s%s WHERE TraceId IN (SELECT TraceId FROM %s) AND %s%s",
+			selectClause, t.opts.Table, sampleClause, prevCTE, where, limitClause), nil
 	}
 
-	return fmt.Sprintf("SELECT DISTINCT TraceId FROM %s%s WHERE %s LIMIT %d",
-		t.opts.Table, sampleClause, where, t.opts.Limit), nil
+	return fmt.Sprintf("%s FROM %s%s WHERE %s%s",
+		selectClause, t.opts.Table, sampleClause, where, limitClause), nil
 }
 
 // transpileSpansetOperation generates SQL for && and || between spansets.
-func (t *transpiler) transpileSpansetOperation(op *traceql.SpansetOperation) (string, error) {
+func (t *transpiler) transpileSpansetOperation(op *traceql.SpansetOperation, prevCTE string) (string, error) {
 	switch op.Op {
 	case traceql.OpSpansetAnd, traceql.OpSpansetUnion:
-		return t.transpileSetOperation(op)
+		return t.transpileSetOperation(op, prevCTE)
 
 	case traceql.OpSpansetChild:
-		return t.transpileStructuralChild(op)
+		return t.transpileStructuralChild(op, prevCTE)
 	case traceql.OpSpansetParent:
-		return t.transpileStructuralParent(op)
+		return t.transpileStructuralParent(op, prevCTE)
 	case traceql.OpSpansetDescendant:
-		return t.transpileStructuralDescendant(op)
+		return t.transpileStructuralDescendant(op, prevCTE)
 	case traceql.OpSpansetAncestor:
-		return t.transpileStructuralAncestor(op)
+		return t.transpileStructuralAncestor(op, prevCTE)
 	case traceql.OpSpansetSibling:
-		return t.transpileStructuralSibling(op)
+		return t.transpileStructuralSibling(op, prevCTE)
 
 	case traceql.OpSpansetNotChild:
-		return t.transpileStructuralNot(op, traceql.OpSpansetChild)
+		return t.transpileStructuralNot(op, traceql.OpSpansetChild, prevCTE)
 	case traceql.OpSpansetNotParent:
-		return t.transpileStructuralNot(op, traceql.OpSpansetParent)
+		return t.transpileStructuralNot(op, traceql.OpSpansetParent, prevCTE)
 	case traceql.OpSpansetNotDescendant:
-		return t.transpileStructuralNot(op, traceql.OpSpansetDescendant)
+		return t.transpileStructuralNot(op, traceql.OpSpansetDescendant, prevCTE)
 	case traceql.OpSpansetNotAncestor:
-		return t.transpileStructuralNot(op, traceql.OpSpansetAncestor)
+		return t.transpileStructuralNot(op, traceql.OpSpansetAncestor, prevCTE)
 	case traceql.OpSpansetNotSibling:
-		return t.transpileStructuralNot(op, traceql.OpSpansetSibling)
+		return t.transpileStructuralNot(op, traceql.OpSpansetSibling, prevCTE)
 
 	case traceql.OpSpansetUnionChild:
-		return t.transpileStructuralUnion(op, traceql.OpSpansetChild)
+		return t.transpileStructuralUnion(op, traceql.OpSpansetChild, prevCTE)
 	case traceql.OpSpansetUnionParent:
-		return t.transpileStructuralUnion(op, traceql.OpSpansetParent)
+		return t.transpileStructuralUnion(op, traceql.OpSpansetParent, prevCTE)
 	case traceql.OpSpansetUnionDescendant:
-		return t.transpileStructuralUnion(op, traceql.OpSpansetDescendant)
+		return t.transpileStructuralUnion(op, traceql.OpSpansetDescendant, prevCTE)
 	case traceql.OpSpansetUnionAncestor:
-		return t.transpileStructuralUnion(op, traceql.OpSpansetAncestor)
+		return t.transpileStructuralUnion(op, traceql.OpSpansetAncestor, prevCTE)
 	case traceql.OpSpansetUnionSibling:
-		return t.transpileStructuralUnion(op, traceql.OpSpansetSibling)
+		return t.transpileStructuralUnion(op, traceql.OpSpansetSibling, prevCTE)
 
 	default:
 		return "", fmt.Errorf("unsupported spanset operator: %s", op.Op)
@@ -299,12 +341,12 @@ func (t *transpiler) transpileSpansetOperation(op *traceql.SpansetOperation) (st
 }
 
 // transpileSetOperation handles && (INTERSECT) and || (UNION) between spansets.
-func (t *transpiler) transpileSetOperation(op *traceql.SpansetOperation) (string, error) {
-	lhsSQL, err := t.transpileElement(op.LHS, "")
+func (t *transpiler) transpileSetOperation(op *traceql.SpansetOperation, prevCTE string) (string, error) {
+	lhsSQL, err := t.transpileElement(op.LHS, prevCTE, false)
 	if err != nil {
 		return "", fmt.Errorf("spanset operation LHS: %w", err)
 	}
-	rhsSQL, err := t.transpileElement(op.RHS, "")
+	rhsSQL, err := t.transpileElement(op.RHS, prevCTE, false)
 	if err != nil {
 		return "", fmt.Errorf("spanset operation RHS: %w", err)
 	}
@@ -335,7 +377,7 @@ func (t *transpiler) extractFilterCondition(elem traceql.PipelineElement) (strin
 
 // transpileStructuralChild generates SQL for { LHS } > { RHS } (direct child).
 // Finds traces where a span matching LHS is the direct parent of a span matching RHS.
-func (t *transpiler) transpileStructuralChild(op *traceql.SpansetOperation) (string, error) {
+func (t *transpiler) transpileStructuralChild(op *traceql.SpansetOperation, prevCTE string) (string, error) {
 	lhsCond, err := t.extractFilterCondition(op.LHS)
 	if err != nil {
 		return "", fmt.Errorf("structural child LHS: %w", err)
@@ -352,15 +394,21 @@ func (t *transpiler) transpileStructuralChild(op *traceql.SpansetOperation) (str
 	// Fall back to unaliased time filter if both are empty
 	_ = tf
 
+	prevFilter := ""
+	if prevCTE != "" {
+		prevFilter = fmt.Sprintf(" AND p.TraceId IN (SELECT TraceId FROM %s)", prevCTE)
+	}
+
 	return fmt.Sprintf(
 		"SELECT DISTINCT p.TraceId FROM %s p "+
 			"JOIN %s c ON p.TraceId = c.TraceId AND p.SpanId = c.ParentSpanId "+
-			"WHERE %s AND %s AND %s AND %s LIMIT %d",
+			"WHERE %s AND %s AND %s AND %s%s LIMIT %d",
 		t.opts.Table, t.opts.Table,
 		t.replaceColumnsWithAlias(lhsCond, "p"),
 		t.replaceColumnsWithAlias(rhsCond, "c"),
 		lhsTimeFilter,
 		rhsTimeFilter,
+		prevFilter,
 		t.opts.Limit,
 	), nil
 }
@@ -368,7 +416,7 @@ func (t *transpiler) transpileStructuralChild(op *traceql.SpansetOperation) (str
 // transpileStructuralParent generates SQL for { LHS } < { RHS } (direct parent).
 // Finds traces where a span matching LHS has a direct parent matching RHS.
 // This is the reverse of child: LHS is the child, RHS is the parent.
-func (t *transpiler) transpileStructuralParent(op *traceql.SpansetOperation) (string, error) {
+func (t *transpiler) transpileStructuralParent(op *traceql.SpansetOperation, prevCTE string) (string, error) {
 	lhsCond, err := t.extractFilterCondition(op.LHS)
 	if err != nil {
 		return "", fmt.Errorf("structural parent LHS: %w", err)
@@ -381,15 +429,21 @@ func (t *transpiler) transpileStructuralParent(op *traceql.SpansetOperation) (st
 	lhsTimeFilter := t.aliasedTimeFilter("c")
 	rhsTimeFilter := t.aliasedTimeFilter("p")
 
+	prevFilter := ""
+	if prevCTE != "" {
+		prevFilter = fmt.Sprintf(" AND c.TraceId IN (SELECT TraceId FROM %s)", prevCTE)
+	}
+
 	return fmt.Sprintf(
 		"SELECT DISTINCT c.TraceId FROM %s c "+
 			"JOIN %s p ON c.TraceId = p.TraceId AND c.ParentSpanId = p.SpanId "+
-			"WHERE %s AND %s AND %s AND %s LIMIT %d",
+			"WHERE %s AND %s AND %s AND %s%s LIMIT %d",
 		t.opts.Table, t.opts.Table,
 		t.replaceColumnsWithAlias(lhsCond, "c"),
 		t.replaceColumnsWithAlias(rhsCond, "p"),
 		lhsTimeFilter,
 		rhsTimeFilter,
+		prevFilter,
 		t.opts.Limit,
 	), nil
 }
@@ -397,7 +451,7 @@ func (t *transpiler) transpileStructuralParent(op *traceql.SpansetOperation) (st
 // transpileStructuralDescendant generates SQL for { LHS } >> { RHS } (descendant).
 // Finds traces where a span matching RHS is a descendant (at any depth) of a span matching LHS.
 // Uses a recursive CTE to walk the ancestor chain.
-func (t *transpiler) transpileStructuralDescendant(op *traceql.SpansetOperation) (string, error) {
+func (t *transpiler) transpileStructuralDescendant(op *traceql.SpansetOperation, prevCTE string) (string, error) {
 	lhsCond, err := t.extractFilterCondition(op.LHS)
 	if err != nil {
 		return "", fmt.Errorf("structural descendant LHS: %w", err)
@@ -410,20 +464,29 @@ func (t *transpiler) transpileStructuralDescendant(op *traceql.SpansetOperation)
 	tf := t.mustTimeFilter()
 
 	// Recursive CTE: start from ancestor spans (LHS), walk down to find descendants (RHS)
+	prevFilter := ""
+	if prevCTE != "" {
+		prevFilter = fmt.Sprintf(" AND TraceId IN (SELECT TraceId FROM %s)", prevCTE)
+	}
+	prevFilterAlias := ""
+	if prevCTE != "" {
+		prevFilterAlias = fmt.Sprintf(" AND d.TraceId IN (SELECT TraceId FROM %s)", prevCTE)
+	}
+
 	return fmt.Sprintf(
 		"WITH RECURSIVE ancestors AS ("+
-			"SELECT TraceId, SpanId FROM %s WHERE %s AND %s"+
+			"SELECT TraceId, SpanId FROM %s WHERE %s AND %s%s"+
 			" UNION ALL "+
 			"SELECT t.TraceId, t.SpanId FROM %s t "+
 			"JOIN ancestors a ON t.ParentSpanId = a.SpanId AND t.TraceId = a.TraceId"+
 			") "+
 			"SELECT DISTINCT d.TraceId FROM %s d "+
 			"JOIN ancestors a ON d.TraceId = a.TraceId AND d.ParentSpanId = a.SpanId "+
-			"WHERE %s AND %s LIMIT %d",
-		t.opts.Table, lhsCond, tf,
+			"WHERE %s AND %s%s LIMIT %d",
+		t.opts.Table, lhsCond, tf, prevFilter,
 		t.opts.Table,
 		t.opts.Table,
-		rhsCond, tf,
+		rhsCond, tf, prevFilterAlias,
 		t.opts.Limit,
 	), nil
 }
@@ -431,7 +494,7 @@ func (t *transpiler) transpileStructuralDescendant(op *traceql.SpansetOperation)
 // transpileStructuralAncestor generates SQL for { LHS } << { RHS } (ancestor).
 // Finds traces where a span matching RHS is an ancestor of a span matching LHS.
 // This is the reverse of descendant.
-func (t *transpiler) transpileStructuralAncestor(op *traceql.SpansetOperation) (string, error) {
+func (t *transpiler) transpileStructuralAncestor(op *traceql.SpansetOperation, prevCTE string) (string, error) {
 	lhsCond, err := t.extractFilterCondition(op.LHS)
 	if err != nil {
 		return "", fmt.Errorf("structural ancestor LHS: %w", err)
@@ -444,27 +507,36 @@ func (t *transpiler) transpileStructuralAncestor(op *traceql.SpansetOperation) (
 	tf := t.mustTimeFilter()
 
 	// Recursive CTE: start from descendant spans (LHS), walk up to find ancestors (RHS)
+	prevFilter := ""
+	if prevCTE != "" {
+		prevFilter = fmt.Sprintf(" AND TraceId IN (SELECT TraceId FROM %s)", prevCTE)
+	}
+	prevFilterAlias := ""
+	if prevCTE != "" {
+		prevFilterAlias = fmt.Sprintf(" AND d.TraceId IN (SELECT TraceId FROM %s)", prevCTE)
+	}
+
 	return fmt.Sprintf(
 		"WITH RECURSIVE descendants AS ("+
-			"SELECT TraceId, SpanId, ParentSpanId FROM %s WHERE %s AND %s"+
+			"SELECT TraceId, SpanId, ParentSpanId FROM %s WHERE %s AND %s%s"+
 			" UNION ALL "+
 			"SELECT t.TraceId, t.SpanId, t.ParentSpanId FROM %s t "+
 			"JOIN descendants d ON t.SpanId = d.ParentSpanId AND t.TraceId = d.TraceId"+
 			") "+
 			"SELECT DISTINCT d.TraceId FROM descendants d "+
 			"JOIN %s t ON d.TraceId = t.TraceId AND d.ParentSpanId = t.SpanId "+
-			"WHERE %s AND %s LIMIT %d",
-		t.opts.Table, lhsCond, tf,
+			"WHERE %s AND %s%s LIMIT %d",
+		t.opts.Table, lhsCond, tf, prevFilter,
 		t.opts.Table,
 		t.opts.Table,
-		rhsCond, tf,
+		rhsCond, tf, prevFilterAlias,
 		t.opts.Limit,
 	), nil
 }
 
 // transpileStructuralSibling generates SQL for { LHS } ~ { RHS } (sibling).
 // Finds traces where spans matching LHS and RHS share the same parent.
-func (t *transpiler) transpileStructuralSibling(op *traceql.SpansetOperation) (string, error) {
+func (t *transpiler) transpileStructuralSibling(op *traceql.SpansetOperation, prevCTE string) (string, error) {
 	lhsCond, err := t.extractFilterCondition(op.LHS)
 	if err != nil {
 		return "", fmt.Errorf("structural sibling LHS: %w", err)
@@ -477,35 +549,41 @@ func (t *transpiler) transpileStructuralSibling(op *traceql.SpansetOperation) (s
 	lhsTimeFilter := t.aliasedTimeFilter("s1")
 	rhsTimeFilter := t.aliasedTimeFilter("s2")
 
+	prevFilter := ""
+	if prevCTE != "" {
+		prevFilter = fmt.Sprintf(" AND s1.TraceId IN (SELECT TraceId FROM %s)", prevCTE)
+	}
+
 	return fmt.Sprintf(
 		"SELECT DISTINCT s1.TraceId FROM %s s1 "+
 			"JOIN %s s2 ON s1.TraceId = s2.TraceId "+
 			"AND s1.ParentSpanId = s2.ParentSpanId "+
-			"WHERE %s AND %s AND s1.ParentSpanId != '' AND s1.SpanId != s2.SpanId AND %s AND %s LIMIT %d",
+			"WHERE %s AND %s AND s1.ParentSpanId != '' AND s1.SpanId != s2.SpanId AND %s AND %s%s LIMIT %d",
 		t.opts.Table, t.opts.Table,
 		t.replaceColumnsWithAlias(lhsCond, "s1"),
 		t.replaceColumnsWithAlias(rhsCond, "s2"),
 		lhsTimeFilter,
 		rhsTimeFilter,
+		prevFilter,
 		t.opts.Limit,
 	), nil
 }
 
 // transpileStructuralNot wraps a structural operation with NOT IN to negate it.
 // E.g., { LHS } !> { RHS } returns traces that do NOT satisfy { LHS } > { RHS }.
-func (t *transpiler) transpileStructuralNot(op *traceql.SpansetOperation, positiveOp traceql.Operator) (string, error) {
+func (t *transpiler) transpileStructuralNot(op *traceql.SpansetOperation, positiveOp traceql.Operator, prevCTE string) (string, error) {
 	// Build the positive structural query
 	positiveQuery, err := t.transpileSpansetOperation(&traceql.SpansetOperation{
 		Op:  positiveOp,
 		LHS: op.LHS,
 		RHS: op.RHS,
-	})
+	}, prevCTE)
 	if err != nil {
 		return "", fmt.Errorf("negated structural: %w", err)
 	}
 
 	// Get all traces from LHS, then exclude those matching the structural condition
-	lhsSQL, err := t.transpileElement(op.LHS, "")
+	lhsSQL, err := t.transpileElement(op.LHS, "", false)
 	if err != nil {
 		return "", fmt.Errorf("negated structural LHS: %w", err)
 	}
@@ -519,17 +597,17 @@ func (t *transpiler) transpileStructuralNot(op *traceql.SpansetOperation, positi
 // transpileStructuralUnion wraps a structural operation with UNION to combine
 // the LHS trace set with the structural match set.
 // E.g., { LHS } &> { RHS } returns traces from LHS UNION traces that satisfy { LHS } > { RHS }.
-func (t *transpiler) transpileStructuralUnion(op *traceql.SpansetOperation, positiveOp traceql.Operator) (string, error) {
+func (t *transpiler) transpileStructuralUnion(op *traceql.SpansetOperation, positiveOp traceql.Operator, prevCTE string) (string, error) {
 	positiveQuery, err := t.transpileSpansetOperation(&traceql.SpansetOperation{
 		Op:  positiveOp,
 		LHS: op.LHS,
 		RHS: op.RHS,
-	})
+	}, prevCTE)
 	if err != nil {
 		return "", fmt.Errorf("union structural: %w", err)
 	}
 
-	lhsSQL, err := t.transpileElement(op.LHS, "")
+	lhsSQL, err := t.transpileElement(op.LHS, "", false)
 	if err != nil {
 		return "", fmt.Errorf("union structural LHS: %w", err)
 	}
@@ -623,6 +701,8 @@ func replaceOutsideStrings(sql string, replacer *strings.Replacer) string {
 }
 
 // transpileScalarFilter generates SQL for aggregate comparisons like count() > 5.
+// When prevCTE is set, the CTE already contains span-level rows with the correct
+// filters applied, so we can aggregate directly from it.
 func (t *transpiler) transpileScalarFilter(f *traceql.ScalarFilter, prevCTE string) (string, error) {
 	// LHS should be an Aggregate
 	aggSQL, err := t.transpileScalarExpr(f.LHS)
@@ -637,30 +717,31 @@ func (t *transpiler) transpileScalarFilter(f *traceql.ScalarFilter, prevCTE stri
 
 	opSQL := operatorToSQL(f.Op)
 
-	from := t.opts.Table
-	where := t.mustTimeFilter()
 	if prevCTE != "" {
-		from = prevCTE
-		where = "1=1"
+		// The upstream CTE already contains span-level rows with proper filters.
+		return fmt.Sprintf("SELECT TraceId FROM %s GROUP BY TraceId HAVING %s %s %s LIMIT %d",
+			prevCTE, aggSQL, opSQL, rhsSQL, t.opts.Limit), nil
 	}
 
+	// No previous CTE: query the raw table (single-stage pipeline)
+	where := t.mustTimeFilter()
 	return fmt.Sprintf("SELECT TraceId FROM %s WHERE %s GROUP BY TraceId HAVING %s %s %s LIMIT %d",
-		from, where, aggSQL, opSQL, rhsSQL, t.opts.Limit), nil
+		t.opts.Table, where, aggSQL, opSQL, rhsSQL, t.opts.Limit), nil
 }
 
 // transpileAggregate generates SQL for a standalone aggregate in a pipeline.
+// When prevCTE is set, the CTE already contains span-level rows.
 func (t *transpiler) transpileAggregate(a *traceql.Aggregate, prevCTE string) (string, error) {
 	aggSQL := aggregateToSQL(a)
 
-	from := t.opts.Table
-	where := t.mustTimeFilter()
 	if prevCTE != "" {
-		from = prevCTE
-		where = "1=1"
+		return fmt.Sprintf("SELECT TraceId, %s AS agg_value FROM %s GROUP BY TraceId LIMIT %d",
+			aggSQL, prevCTE, t.opts.Limit), nil
 	}
 
+	where := t.mustTimeFilter()
 	return fmt.Sprintf("SELECT TraceId, %s AS agg_value FROM %s WHERE %s GROUP BY TraceId LIMIT %d",
-		aggSQL, from, where, t.opts.Limit), nil
+		aggSQL, t.opts.Table, where, t.opts.Limit), nil
 }
 
 // transpileScalarExpr converts a ScalarExpression to SQL.
@@ -686,14 +767,8 @@ func (t *transpiler) transpileScalarExpr(expr traceql.ScalarExpression) (string,
 }
 
 // transpileMetricsAggregate generates SQL for metrics pipeline functions.
+// When prevCTE is set, the CTE already contains span-level rows.
 func (t *transpiler) transpileMetricsAggregate(m *traceql.MetricsAggregate, prevCTE string) (string, error) {
-	from := t.opts.Table
-	where := t.mustTimeFilter()
-	if prevCTE != "" {
-		from = prevCTE
-		where = "1=1"
-	}
-
 	// Determine the aggregation SQL
 	var aggExpr string
 	switch m.Op {
@@ -786,8 +861,15 @@ func (t *transpiler) transpileMetricsAggregate(m *traceql.MetricsAggregate, prev
 		groupBy = " GROUP BY " + strings.Join(groupByParts, ", ")
 	}
 
+	if prevCTE != "" {
+		// The upstream CTE already contains span-level rows with proper filters.
+		return fmt.Sprintf("SELECT %s FROM %s%s LIMIT %d",
+			strings.Join(selectParts, ", "), prevCTE, groupBy, t.opts.Limit), nil
+	}
+
+	where := t.mustTimeFilter()
 	return fmt.Sprintf("SELECT %s FROM %s WHERE %s%s LIMIT %d",
-		strings.Join(selectParts, ", "), from, where, groupBy, t.opts.Limit), nil
+		strings.Join(selectParts, ", "), t.opts.Table, where, groupBy, t.opts.Limit), nil
 }
 
 func sanitizeAlias(s string) string {

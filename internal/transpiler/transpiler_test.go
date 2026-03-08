@@ -1099,7 +1099,7 @@ func TestTranspileElementGroupOperationError(t *testing.T) {
 	tr := &transpiler{opts: defaultOpts()}
 	_, err := tr.transpileElement(&traceql.GroupOperation{
 		Expression: &traceql.Attribute{Name: "http.method", Scope: traceql.AttributeScopeSpan},
-	}, "")
+	}, "", false)
 	if err == nil {
 		t.Fatal("expected error for standalone GroupOperation")
 	}
@@ -1112,7 +1112,7 @@ func TestTranspileElementGroupOperationError(t *testing.T) {
 
 func TestTranspileElementCoalesceStandalone(t *testing.T) {
 	tr := &transpiler{opts: defaultOpts()}
-	sql, err := tr.transpileElement(&traceql.CoalesceOperation{}, "")
+	sql, err := tr.transpileElement(&traceql.CoalesceOperation{}, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1122,7 +1122,7 @@ func TestTranspileElementCoalesceStandalone(t *testing.T) {
 
 func TestTranspileElementCoalesceWithPrevCTE(t *testing.T) {
 	tr := &transpiler{opts: defaultOpts()}
-	sql, err := tr.transpileElement(&traceql.CoalesceOperation{}, "stage1")
+	sql, err := tr.transpileElement(&traceql.CoalesceOperation{}, "stage1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1147,7 +1147,7 @@ func TestTranspileNestedPipeline(t *testing.T) {
 			},
 		},
 	}
-	sql, err := tr.transpileElement(nested, "")
+	sql, err := tr.transpileElement(nested, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1270,7 +1270,7 @@ func TestTranspileElementUnsupportedType(t *testing.T) {
 	// SelectOperation is not handled in transpileElement
 	_, err := tr.transpileElement(&traceql.SelectOperation{
 		Attrs: []traceql.Attribute{{Name: "x"}},
-	}, "")
+	}, "", false)
 	if err == nil {
 		t.Fatal("expected error for unsupported element type")
 	}
@@ -1288,7 +1288,6 @@ func TestTranspileMetricsAggregateWithPrevCTE(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertContains(t, sql, "FROM stage1")
-	assertContains(t, sql, "WHERE 1=1")
 	t.Logf("SQL: %s", sql)
 }
 
@@ -1359,7 +1358,7 @@ func TestTranspileSpansetOperationUnsupportedOp(t *testing.T) {
 			Expression: &traceql.Attribute{Intrinsic: traceql.IntrinsicName},
 		},
 	}
-	_, err := tr.transpileSpansetOperation(op)
+	_, err := tr.transpileSpansetOperation(op, "")
 	if err == nil {
 		t.Fatal("expected error for unsupported spanset operator")
 	}
@@ -1517,7 +1516,7 @@ func TestTranspileStructuralNonFilterError(t *testing.T) {
 		LHS: &traceql.CoalesceOperation{},
 		RHS: &traceql.SpansetFilter{},
 	}
-	_, err := tr.transpileSpansetOperation(op)
+	_, err := tr.transpileSpansetOperation(op, "")
 	if err == nil {
 		t.Fatal("expected error for structural operator with non-filter element")
 	}
@@ -1962,7 +1961,7 @@ func TestTranspileStructuralNotSibling(t *testing.T) {
 			},
 		},
 	}
-	sql, err := tr.transpileSpansetOperation(op)
+	sql, err := tr.transpileSpansetOperation(op, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2001,4 +2000,10 @@ func TestExtractFilterConditionEmptyFilter(t *testing.T) {
 	if cond != "1=1" {
 		t.Errorf("expected '1=1', got %q", cond)
 	}
+}
+
+func TestTranspileReverseBinaryOp(t *testing.T) {
+	sql := mustTranspile(t, `{ 42 = .foo }`)
+	assertContains(t, sql, "toInt64OrZero(SpanAttributes['foo']) = 42")
+	t.Logf("SQL: %s", sql)
 }

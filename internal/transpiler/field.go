@@ -32,6 +32,20 @@ func (t *transpiler) transpileBinaryOp(b *traceql.BinaryOperation) (string, erro
 		}
 	}
 
+	// Handle reverse case where static is on LHS (e.g., { 42 = .foo }).
+	// Swap the operands and flip directional operators so that
+	// transpileAttributeComparison receives (attribute, op, static).
+	if static, ok := b.LHS.(*traceql.Static); ok {
+		if attr, ok := b.RHS.(*traceql.Attribute); ok {
+			if swapped, ok := swapOperator(b.Op); ok {
+				return t.transpileAttributeComparison(attr, swapped, static)
+			}
+			// Non-commutative operators (regex, IN, etc.) cannot be
+			// meaningfully swapped. Fall through to the generic path
+			// which handles them without type coercion.
+		}
+	}
+
 	lhs, err := t.transpileFieldExpr(b.LHS)
 	if err != nil {
 		return "", err
@@ -507,6 +521,28 @@ func transpileNestedSetParentComparison(op traceql.Operator, rhs int64) string {
 	}
 
 	return "1=1"
+}
+
+// swapOperator returns the commuted operator for reversed operand order
+// (e.g., > becomes <). It returns false for non-commutative operators
+// like regex and IN that cannot be meaningfully swapped.
+func swapOperator(op traceql.Operator) (traceql.Operator, bool) {
+	switch op {
+	case traceql.OpEqual:
+		return traceql.OpEqual, true
+	case traceql.OpNotEqual:
+		return traceql.OpNotEqual, true
+	case traceql.OpGreater:
+		return traceql.OpLess, true
+	case traceql.OpGreaterEqual:
+		return traceql.OpLessEqual, true
+	case traceql.OpLess:
+		return traceql.OpGreater, true
+	case traceql.OpLessEqual:
+		return traceql.OpGreaterEqual, true
+	default:
+		return op, false
+	}
 }
 
 func escapeSQL(s string) string {

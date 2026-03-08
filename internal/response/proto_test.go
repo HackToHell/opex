@@ -72,12 +72,12 @@ func TestConvertAnyValue(t *testing.T) {
 	bl := func(b bool) *bool { return &b }
 
 	tests := []struct {
-		name      string
-		input     AnyValue
-		wantType  string
-		wantStr   string
-		wantInt   int64
-		wantBool  bool
+		name     string
+		input    AnyValue
+		wantType string
+		wantStr  string
+		wantInt  int64
+		wantBool bool
 	}{
 		{
 			name:     "string value",
