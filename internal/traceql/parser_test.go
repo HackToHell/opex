@@ -294,6 +294,9 @@ func TestParseDurations(t *testing.T) {
 		{"{ duration > 1m }", time.Minute},
 		{"{ duration > 100us }", 100 * time.Microsecond},
 		{"{ duration > 100ns }", 100 * time.Nanosecond},
+		{"{ duration > 1d }", 24 * time.Hour},
+		{"{ duration > 1d12h }", 36 * time.Hour},
+		{"{ duration > 2d30m }", 48*time.Hour + 30*time.Minute},
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {

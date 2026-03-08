@@ -34,3 +34,9 @@ tmp/
 .env
 .env.*
 credentials.json
+
+# Node.js
+node_modules/
+
+# Playwright test artifacts
+e2e/test-results/

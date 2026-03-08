@@ -172,6 +172,9 @@ var keywords = map[string]tokenType{
 	"instrumentation": tokenIdent,
 	"parent":          tokenIdent,
 	"trace":           tokenIdent,
+	"nestedSetParent": tokenIdent,
+	"nestedSetLeft":   tokenIdent,
+	"nestedSetRight":  tokenIdent,
 }
 
 // lexer tokenizes a TraceQL input string.

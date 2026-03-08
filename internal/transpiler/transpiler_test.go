@@ -770,8 +770,8 @@ func TestStaticToSQL(t *testing.T) {
 		{"int", traceql.Static{Type: traceql.TypeInt, IntVal: 42}, "42"},
 		{"float", traceql.Static{Type: traceql.TypeFloat, FloatVal: 3.14}, "3.14"},
 		{"string", traceql.Static{Type: traceql.TypeString, StringVal: "hello"}, "'hello'"},
-		{"bool true", traceql.Static{Type: traceql.TypeBoolean, BoolVal: true}, "'true'"},
-		{"bool false", traceql.Static{Type: traceql.TypeBoolean, BoolVal: false}, "'false'"},
+		{"bool true", traceql.Static{Type: traceql.TypeBoolean, BoolVal: true}, "1"},
+		{"bool false", traceql.Static{Type: traceql.TypeBoolean, BoolVal: false}, "0"},
 		{"duration", traceql.Static{Type: traceql.TypeDuration, DurationVal: 2 * time.Second}, "2000000000"},
 		{"status error", traceql.Static{Type: traceql.TypeStatus, StatusVal: traceql.StatusError}, "'STATUS_CODE_ERROR'"},
 		{"kind server", traceql.Static{Type: traceql.TypeKind, KindVal: traceql.KindServer}, "'SPAN_KIND_SERVER'"},
@@ -1021,6 +1021,9 @@ func TestEscapeSQL(t *testing.T) {
 		{"hello", "hello"},
 		{"it's", "it\\'s"},
 		{"a'b'c", "a\\'b\\'c"},
+		{"back\\slash", "back\\\\slash"},
+		{"inject\\' OR 1=1 --", "inject\\\\\\' OR 1=1 --"},
+		{"no special chars", "no special chars"},
 	}
 	for _, tc := range tests {
 		got := escapeSQL(tc.input)
@@ -1570,44 +1573,69 @@ func TestReplaceColumnsWithAlias(t *testing.T) {
 	tr := &transpiler{opts: defaultOpts()}
 
 	tests := []struct {
+		name     string
 		input    string
 		alias    string
 		expected string
 	}{
 		{
+			"span attributes",
 			"SpanAttributes['http.method'] = 'GET'",
 			"p",
 			"p.SpanAttributes['http.method'] = 'GET'",
 		},
 		{
+			"resource attributes",
 			"ResourceAttributes['env'] = 'prod'",
 			"c",
 			"c.ResourceAttributes['env'] = 'prod'",
 		},
 		{
+			"service name",
 			"ServiceName = 'frontend'",
 			"s1",
 			"s1.ServiceName = 'frontend'",
 		},
 		{
+			"status code",
 			"StatusCode = 'STATUS_CODE_ERROR'",
 			"s2",
 			"s2.StatusCode = 'STATUS_CODE_ERROR'",
 		},
 		{
+			"duration",
 			"Duration > 1000000000",
 			"p",
 			"p.Duration > 1000000000",
 		},
 		{
+			"span name",
 			"SpanName = 'GET /users'",
 			"c",
 			"c.SpanName = 'GET /users'",
 		},
+		{
+			"string literal containing Duration not replaced",
+			"SpanName = 'Duration'",
+			"p",
+			"p.SpanName = 'Duration'",
+		},
+		{
+			"string literal containing ServiceName not replaced",
+			"SpanAttributes['key'] = 'ServiceName is cool'",
+			"c",
+			"c.SpanAttributes['key'] = 'ServiceName is cool'",
+		},
+		{
+			"escaped quote inside string literal",
+			"SpanName = 'it\\'s Duration'",
+			"p",
+			"p.SpanName = 'it\\'s Duration'",
+		},
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			result := tr.replaceColumnsWithAlias(tc.input, tc.alias)
 			if result != tc.expected {
 				t.Errorf("replaceColumnsWithAlias(%q, %q) = %q, want %q", tc.input, tc.alias, result, tc.expected)

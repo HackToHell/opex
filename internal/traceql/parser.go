@@ -3,6 +3,7 @@ package traceql
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -292,6 +293,24 @@ func (p *parser) parseSpansetPrimary() (PipelineElement, error) {
 	if p.peek() == tokenCloseBrace {
 		p.advance()
 		return &SpansetFilter{Expression: nil}, nil
+	}
+
+	// Handle leading && or || (e.g., { && true } from Grafana drilldown).
+	// Treat the missing LHS as "all spans" and just parse the RHS expression.
+	if p.peek() == tokenAnd || p.peek() == tokenOr {
+		p.advance() // consume the leading && or ||
+		if p.peek() == tokenCloseBrace {
+			p.advance()
+			return &SpansetFilter{Expression: nil}, nil
+		}
+		expr, err := p.parseFieldExpression()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(tokenCloseBrace); err != nil {
+			return nil, fmt.Errorf("expected '}': %w", err)
+		}
+		return &SpansetFilter{Expression: expr}, nil
 	}
 
 	expr, err := p.parseFieldExpression()
@@ -1147,19 +1166,32 @@ func (p *parser) parseStatic() (*Static, error) {
 }
 
 // parseDuration handles Go-style durations plus 'd' for days.
+// It supports multi-part durations like "1d12h" or "2d30m".
 func parseDuration(s string) (time.Duration, error) {
-	// Handle 'd' (day) suffix by converting to hours
-	if len(s) > 0 && s[len(s)-1] == 'd' {
-		// Extract the number before 'd'
-		numStr := s[:len(s)-1]
-		v, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid day duration: %w", err)
-		}
-		return time.Duration(v * 24 * float64(time.Hour)), nil
+	// Check if the string contains 'd' for days
+	dIdx := strings.IndexByte(s, 'd')
+	if dIdx < 0 {
+		// No days component — delegate to Go's time.ParseDuration
+		return time.ParseDuration(s)
 	}
 
-	// Handle 'ns' by checking for it specifically since 'n' alone would be ambiguous
-	// Go's time.ParseDuration handles ns, us/µs, ms, s, m, h natively
-	return time.ParseDuration(s)
+	// Extract the number before 'd'
+	numStr := s[:dIdx]
+	v, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid day duration: %w", err)
+	}
+	dayDuration := time.Duration(v * 24 * float64(time.Hour))
+
+	// Check for remaining duration parts after 'd' (e.g., "12h" in "1d12h")
+	remainder := s[dIdx+1:]
+	if remainder == "" {
+		return dayDuration, nil
+	}
+
+	restDuration, err := time.ParseDuration(remainder)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration after days: %w", err)
+	}
+	return dayDuration + restDuration, nil
 }

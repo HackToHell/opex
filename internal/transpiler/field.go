@@ -25,6 +25,24 @@ func (t *transpiler) transpileFieldExpr(expr traceql.FieldExpression) (string, e
 
 // transpileBinaryOp converts a binary operation to SQL.
 func (t *transpiler) transpileBinaryOp(b *traceql.BinaryOperation) (string, error) {
+	// Optimize: x && true → x, true && x → x, x || false → x, false || x → x
+	if b.Op == traceql.OpAnd {
+		if isBoolLiteral(b.RHS, true) {
+			return t.transpileFieldExpr(b.LHS)
+		}
+		if isBoolLiteral(b.LHS, true) {
+			return t.transpileFieldExpr(b.RHS)
+		}
+	}
+	if b.Op == traceql.OpOr {
+		if isBoolLiteral(b.RHS, false) {
+			return t.transpileFieldExpr(b.LHS)
+		}
+		if isBoolLiteral(b.LHS, false) {
+			return t.transpileFieldExpr(b.RHS)
+		}
+	}
+
 	// Special case: attribute compared to a typed value needs type coercion
 	if attr, ok := b.LHS.(*traceql.Attribute); ok {
 		if static, ok := b.RHS.(*traceql.Static); ok {
@@ -52,6 +70,11 @@ func (t *transpiler) transpileBinaryOp(b *traceql.BinaryOperation) (string, erro
 	}
 
 	return fmt.Sprintf("(%s %s %s)", lhs, op, rhs), nil
+}
+
+func isBoolLiteral(expr traceql.FieldExpression, val bool) bool {
+	s, ok := expr.(*traceql.Static)
+	return ok && s.Type == traceql.TypeBoolean && s.BoolVal == val
 }
 
 // transpileUnaryOp converts a unary operation to SQL.
@@ -127,7 +150,7 @@ func (t *transpiler) transpileAttributeComparison(attr *traceql.Attribute, op tr
 	}
 
 	opStr := operatorToSQL(op)
-	val := staticToSQL(static)
+	val := staticToSQLForMapComparison(static)
 
 	// For map attributes, we need type coercion based on the static type
 	switch attr.Scope {
@@ -203,12 +226,21 @@ func mapAccessSQL(mapCol, key string, valType traceql.StaticType) string {
 		return fmt.Sprintf("toInt64OrZero(%s)", access)
 	case traceql.TypeFloat:
 		return fmt.Sprintf("toFloat64OrZero(%s)", access)
-	case traceql.TypeBoolean:
-		// Booleans are stored as 'true'/'false' strings
-		return access
 	default:
 		return access
 	}
+}
+
+// staticToSQLForMapComparison converts a Static to SQL appropriate for
+// comparison with a map attribute (where values are always strings).
+func staticToSQLForMapComparison(s *traceql.Static) string {
+	if s.Type == traceql.TypeBoolean {
+		if s.BoolVal {
+			return "'true'"
+		}
+		return "'false'"
+	}
+	return staticToSQL(s)
 }
 
 // attributeToSQL converts an Attribute to its SQL column representation.
@@ -270,6 +302,14 @@ func intrinsicColumnSQL(i traceql.Intrinsic) string {
 		return "Duration" // simplified
 	case traceql.IntrinsicSpanStartTime:
 		return "Timestamp"
+	case traceql.IntrinsicNestedSetParent:
+		// nestedSetParent < 0 means root span (no parent).
+		// Map to -1 for root spans, 1 for non-root spans.
+		return "if(ParentSpanId = '', -1, 1)"
+	case traceql.IntrinsicNestedSetLeft:
+		return "1"
+	case traceql.IntrinsicNestedSetRight:
+		return "2"
 	default:
 		return "SpanName"
 	}
@@ -288,9 +328,9 @@ func staticToSQL(s *traceql.Static) string {
 		return fmt.Sprintf("'%s'", escapeSQL(s.StringVal))
 	case traceql.TypeBoolean:
 		if s.BoolVal {
-			return "'true'"
+			return "1"
 		}
-		return "'false'"
+		return "0"
 	case traceql.TypeDuration:
 		// Duration is stored in nanoseconds
 		return fmt.Sprintf("%d", s.DurationVal.Nanoseconds())
@@ -431,6 +471,10 @@ func aggregateToSQL(a *traceql.Aggregate) string {
 	}
 }
 
+// escapeSQL escapes a string for safe inclusion in a ClickHouse SQL string literal.
+// It escapes both backslashes and single quotes to prevent SQL injection.
 func escapeSQL(s string) string {
-	return strings.ReplaceAll(s, "'", "\\'")
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "'", "\\'")
+	return s
 }
