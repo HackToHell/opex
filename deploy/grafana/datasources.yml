@@ -4,9 +4,9 @@ datasources:
   - name: Opex (Tempo)
     type: tempo
     access: proxy
-    # When running Opex on the host machine, use host.docker.internal.
-    # Change this to http://opex:8080 if running Opex in docker-compose.
-    url: http://host.docker.internal:8080
+    # When running Opex on the host (make run-dev), use host.docker.internal.
+    # docker-compose overrides this via OPEX_URL to http://opex:8080.
+    url: ${OPEX_URL:-http://host.docker.internal:8080}
     isDefault: true
     editable: true
     jsonData:

@@ -14,7 +14,7 @@ LDFLAGS := -X '$(MODULE)/internal/api.Version=$(VERSION)' \
            -X '$(MODULE)/internal/api.Branch=$(BRANCH)' \
            -X '$(MODULE)/internal/api.BuildDate=$(BUILD_DATE)'
 
-.PHONY: build test run clean up down logs seed fmt vet lint
+.PHONY: build test run clean up down logs seed fmt vet lint docker-build
 
 ## build: Compile the opex binary
 build:
@@ -37,12 +37,20 @@ run: build
 run-dev:
 	go run -ldflags "$(LDFLAGS)" ./cmd/opex --config config.yaml
 
-## up: Start ClickHouse and Grafana via docker-compose
+## docker-build: Build the opex Docker image
+docker-build:
+	BUILD_DATE=$(BUILD_DATE) docker-compose -f deploy/docker-compose.yml build opex
+
+## up: Start ClickHouse, Opex, and Grafana via docker-compose
 up:
-	docker-compose -f deploy/docker-compose.yml up -d
-	@echo "Waiting for ClickHouse to be healthy..."
+	BUILD_DATE=$(BUILD_DATE) docker-compose -f deploy/docker-compose.yml up -d --build
+	@echo "Waiting for all services to be healthy..."
 	@until docker exec opex-clickhouse clickhouse-client --query "SELECT 1" >/dev/null 2>&1; do sleep 1; done
 	@echo "ClickHouse is ready."
+	@until docker exec opex-server wget --spider -q http://localhost:8080/api/status/buildinfo 2>/dev/null; do sleep 1; done
+	@echo "Opex is ready."
+	@echo ""
+	@echo "Opex:       http://localhost:8080"
 	@echo "Grafana:    http://localhost:3000  (admin/admin)"
 	@echo "ClickHouse: http://localhost:8123"
 

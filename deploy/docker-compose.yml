@@ -24,8 +24,28 @@ services:
         soft: 262144
         hard: 262144
 
+  opex:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        BUILD_DATE: "${BUILD_DATE:-}"
+    container_name: opex-server
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.docker.yaml:/etc/opex/config.yaml:ro
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/status/buildinfo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   grafana:
-    image: grafana/grafana:11.2.0
+    image: grafana/grafana:latest
     container_name: opex-grafana
     ports:
       - "3000:3000"
@@ -37,8 +57,9 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      OPEX_URL: http://opex:8080
     depends_on:
-      clickhouse:
+      opex:
         condition: service_healthy
 
 volumes:

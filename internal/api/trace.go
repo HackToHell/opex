@@ -52,6 +52,18 @@ func (h *TraceHandlers) TraceByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	trace := response.BuildTrace(spans)
+
+	if response.MarshalingFormat(r) == response.HeaderAcceptProtobuf {
+		data, err := response.MarshalTraceProto(trace)
+		if err != nil {
+			h.logger.Error("failed to marshal trace protobuf", "traceID", traceID, "error", err)
+			response.WriteError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		response.WriteProtobuf(w, http.StatusOK, data)
+		return
+	}
+
 	response.WriteJSON(w, http.StatusOK, trace)
 }
 
@@ -78,14 +90,26 @@ func (h *TraceHandlers) TraceByIDV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var trace *response.Trace
+	if len(spans) > 0 {
+		trace = response.BuildTrace(spans)
+	}
+
+	if response.MarshalingFormat(r) == response.HeaderAcceptProtobuf && trace != nil {
+		data, err := response.MarshalTraceProto(trace)
+		if err != nil {
+			h.logger.Error("failed to marshal trace protobuf", "traceID", traceID, "error", err)
+			response.WriteError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		response.WriteProtobuf(w, http.StatusOK, data)
+		return
+	}
+
 	resp := &response.TraceByIDResponse{
+		Trace:  trace,
 		Status: "complete",
 	}
-
-	if len(spans) > 0 {
-		resp.Trace = response.BuildTrace(spans)
-	}
-
 	response.WriteJSON(w, http.StatusOK, resp)
 }
 
