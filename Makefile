@@ -14,7 +14,7 @@ LDFLAGS := -X '$(MODULE)/internal/api.Version=$(VERSION)' \
            -X '$(MODULE)/internal/api.Branch=$(BRANCH)' \
            -X '$(MODULE)/internal/api.BuildDate=$(BUILD_DATE)'
 
-.PHONY: build test run clean up down logs seed fmt vet lint docker-build
+.PHONY: build test run clean up down logs seed fmt vet lint docker-build test-e2e test-e2e-api test-e2e-grafana
 
 ## build: Compile the opex binary
 build:
@@ -83,6 +83,18 @@ vet:
 ## lint: Run golangci-lint
 lint:
 	golangci-lint run ./...
+
+## test-e2e: Run all Playwright integration tests (requires `make up`)
+test-e2e:
+	cd e2e && npx playwright test
+
+## test-e2e-api: Run only API integration tests
+test-e2e-api:
+	cd e2e && npx playwright test --project=api
+
+## test-e2e-grafana: Run only Grafana UI integration tests
+test-e2e-grafana:
+	cd e2e && npx playwright test --project=grafana
 
 ## clean: Remove build artifacts
 clean:

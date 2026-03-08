@@ -4,9 +4,9 @@ datasources:
   - name: Opex (Tempo)
     type: tempo
     access: proxy
-    # When running Opex on the host (make run-dev), use host.docker.internal.
-    # docker-compose overrides this via OPEX_URL to http://opex:8080.
-    url: ${OPEX_URL:-http://host.docker.internal:8080}
+    # docker-compose: resolved via container name.
+    # run-dev (opex on host): edit URL to http://host.docker.internal:8080 in Grafana UI.
+    url: $OPEX_URL
     isDefault: true
     editable: true
     jsonData:

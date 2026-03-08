@@ -96,7 +96,7 @@ func (h *TraceHandlers) TraceByIDV2(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if response.MarshalingFormat(r) == response.HeaderAcceptProtobuf && trace != nil {
-		data, err := response.MarshalTraceProto(trace)
+		data, err := response.MarshalTraceByIDResponseProto(trace)
 		if err != nil {
 			h.logger.Error("failed to marshal trace protobuf", "traceID", traceID, "error", err)
 			response.WriteError(w, http.StatusInternalServerError, "internal server error")
