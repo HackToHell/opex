@@ -676,3 +676,61 @@ func TestParseMaxAggregate(t *testing.T) {
 		t.Fatalf("expected AggregateMax, got %v", agg.Op)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Spanset expressions — full coverage from Tempo test_examples.yaml L93
+// ---------------------------------------------------------------------------
+
+func TestParseAllSpansetExpressions(t *testing.T) {
+	tests := []struct {
+		name   string
+		query  string
+		wantOp Operator
+	}{
+		{"and", `{ true } && { true }`, OpSpansetAnd},
+		{"union", `{ true } || { true }`, OpSpansetUnion},
+		{"descendant", `{ true } >> { true }`, OpSpansetDescendant},
+		{"ancestor", `{ true } << { true }`, OpSpansetAncestor},
+		{"child", `{ true } > { true }`, OpSpansetChild},
+		{"parent", `{ true } < { true }`, OpSpansetParent},
+		{"sibling", `{ true } ~ { true }`, OpSpansetSibling},
+		{"not_child", `{ true } !> { true }`, OpSpansetNotChild},
+		{"not_parent", `{ true } !< { true }`, OpSpansetNotParent},
+		{"not_sibling", `{ true } !~ { true }`, OpSpansetNotSibling},
+		{"not_descendant", `{ true } !>> { true }`, OpSpansetNotDescendant},
+		{"not_ancestor", `{ true } !<< { true }`, OpSpansetNotAncestor},
+		{"union_child", `{ true } &> { true }`, OpSpansetUnionChild},
+		{"union_parent", `{ true } &< { true }`, OpSpansetUnionParent},
+		{"union_sibling", `{ true } &~ { true }`, OpSpansetUnionSibling},
+		{"union_descendant", `{ true } &>> { true }`, OpSpansetUnionDescendant},
+		{"union_ancestor", `{ true } &<< { true }`, OpSpansetUnionAncestor},
+		{"pipeline_descendant", `({ true } | count() > 1 | { false }) >> ({ true } | count() > 1 | { false })`, OpSpansetDescendant},
+		{"pipeline_child", `({ true } | count() > 1 | { false }) > ({ true } | count() > 1 | { false })`, OpSpansetChild},
+		{"pipeline_sibling", `({ true } | count() > 1 | { false }) ~ ({ true } | count() > 1 | { false })`, OpSpansetSibling},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := mustParse(t, tc.query)
+			if len(root.Pipeline.Elements) == 0 {
+				t.Fatalf("expected at least one pipeline element")
+			}
+			sop, ok := root.Pipeline.Elements[0].(*SpansetOperation)
+			if !ok {
+				t.Fatalf("expected *SpansetOperation, got %T", root.Pipeline.Elements[0])
+			}
+			if sop.Op != tc.wantOp {
+				t.Errorf("operator = %v, want %v", sop.Op, tc.wantOp)
+			}
+		})
+	}
+}
+
+func TestParseNotSiblingRegexStillWorks(t *testing.T) {
+	root := mustParse(t, `{ name !~ "internal.*" }`)
+	sf := root.Pipeline.Elements[0].(*SpansetFilter)
+	bin := sf.Expression.(*BinaryOperation)
+	if bin.Op != OpNotRegex {
+		t.Fatalf("expected OpNotRegex, got %v", bin.Op)
+	}
+}

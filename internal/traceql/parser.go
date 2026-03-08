@@ -136,7 +136,11 @@ func (p *parser) parsePipelineElement() (PipelineElement, error) {
 	case tokenOpenBrace:
 		return p.parseSpansetExpression()
 	case tokenOpenParen:
-		return p.parseWrappedScalarFilter()
+		lhs, err := p.parseWrappedScalarFilter()
+		if err != nil {
+			return nil, err
+		}
+		return p.tryChainSpansetOps(lhs)
 	case tokenCount, tokenMin, tokenMax, tokenSum, tokenAvg:
 		return p.parseAggregateOrScalarFilter()
 	case tokenRate, tokenCountOverTime, tokenMinOverTime, tokenMaxOverTime,
@@ -167,13 +171,21 @@ func (p *parser) parseSpansetExpression() (PipelineElement, error) {
 		return nil, err
 	}
 
+	return p.tryChainSpansetOps(lhs)
+}
+
+// tryChainSpansetOps repeatedly checks for a spanset-level operator and,
+// if found, parses the right-hand operand and wraps the result in a
+// SpansetOperation. It accepts an already-parsed left-hand side so both
+// { filter } and ( pipeline ) can serve as the initial operand.
+func (p *parser) tryChainSpansetOps(lhs PipelineElement) (PipelineElement, error) {
 	for {
 		op, ok := p.trySpansetOperator()
 		if !ok {
 			break
 		}
 
-		rhs, err := p.parseSpansetPrimary()
+		rhs, err := p.parseSpansetOperand()
 		if err != nil {
 			return nil, err
 		}
@@ -188,6 +200,15 @@ func (p *parser) parseSpansetExpression() (PipelineElement, error) {
 	return lhs, nil
 }
 
+// parseSpansetOperand parses either a { filter } block or a ( pipeline )
+// group as an operand for spanset-level operators.
+func (p *parser) parseSpansetOperand() (PipelineElement, error) {
+	if p.peek() == tokenOpenParen {
+		return p.parseWrappedScalarFilter()
+	}
+	return p.parseSpansetPrimary()
+}
+
 // trySpansetOperator tries to consume a spanset-level operator.
 // These are && and || when they appear between { } blocks, and structural operators.
 func (p *parser) trySpansetOperator() (Operator, bool) {
@@ -200,16 +221,24 @@ func (p *parser) trySpansetOperator() (Operator, bool) {
 		p.advance()
 		return OpSpansetUnion, true
 	case tokenGt:
-		// Could be structural child operator between spansets
-		if p.peekAt(1) == tokenOpenBrace {
+		next := p.peekAt(1)
+		if next == tokenOpenBrace || next == tokenOpenParen {
 			p.advance()
 			return OpSpansetChild, true
 		}
 		return OpNone, false
 	case tokenLt:
-		if p.peekAt(1) == tokenOpenBrace {
+		next := p.peekAt(1)
+		if next == tokenOpenBrace || next == tokenOpenParen {
 			p.advance()
 			return OpSpansetParent, true
+		}
+		return OpNone, false
+	case tokenNotRegex:
+		next := p.peekAt(1)
+		if next == tokenOpenBrace || next == tokenOpenParen {
+			p.advance()
+			return OpSpansetNotSibling, true
 		}
 		return OpNone, false
 	case tokenGtGt:
@@ -320,8 +349,9 @@ func (p *parser) parseWrappedScalarFilter() (PipelineElement, error) {
 		return nil, fmt.Errorf("expected ')': %w", err)
 	}
 
-	// The wrapped pipeline should end with an aggregate, then we compare
-	if op, ok := p.tryComparisonOp(); ok {
+	// Skip comparison when > or < is followed by { or ( — that's a spanset operator,
+	// not a scalar comparison, and will be handled by tryChainSpansetOps.
+	if op, ok := p.tryWrappedComparisonOp(); ok {
 		rhs, err := p.parseScalarOperand()
 		if err != nil {
 			return nil, err
@@ -401,6 +431,20 @@ func (p *parser) parseScalarOperand() (ScalarExpression, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// tryWrappedComparisonOp is like tryComparisonOp but refuses to consume > or <
+// when the following token is { or (, because that indicates a spanset structural
+// operator rather than a scalar comparison.
+func (p *parser) tryWrappedComparisonOp() (Operator, bool) {
+	tok := p.peek()
+	if tok == tokenGt || tok == tokenLt {
+		next := p.peekAt(1)
+		if next == tokenOpenBrace || next == tokenOpenParen {
+			return OpNone, false
+		}
+	}
+	return p.tryComparisonOp()
 }
 
 func (p *parser) tryComparisonOp() (Operator, bool) {
