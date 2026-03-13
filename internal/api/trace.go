@@ -42,7 +42,7 @@ func (h *TraceHandlers) TraceByID(w http.ResponseWriter, r *http.Request) {
 	spans, err := h.ch.QueryTraceByID(r.Context(), traceID)
 	if err != nil {
 		h.logger.Error("failed to query trace", "traceID", traceID, "error", err)
-		response.WriteError(w, http.StatusInternalServerError, "internal server error")
+		writeDBError(w, err, "internal server error")
 		return
 	}
 
@@ -77,7 +77,7 @@ func (h *TraceHandlers) TraceByIDV2(w http.ResponseWriter, r *http.Request) {
 	spans, err := h.ch.QueryTraceByID(r.Context(), traceID)
 	if err != nil {
 		h.logger.Error("failed to query trace", "traceID", traceID, "error", err)
-		response.WriteError(w, http.StatusInternalServerError, "internal server error")
+		writeDBError(w, err, "internal server error")
 		return
 	}
 

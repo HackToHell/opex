@@ -3,9 +3,13 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"runtime"
+
+	"github.com/hacktohell/opex/internal/clickhouse"
+	"github.com/hacktohell/opex/internal/response"
 )
 
 // Build-time variables, injected via -ldflags.
@@ -36,6 +40,17 @@ func (h *Handlers) Echo(w http.ResponseWriter, _ *http.Request) {
 func (h *Handlers) Ready(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ready"))
+}
+
+// writeDBError inspects a ClickHouse error and writes the appropriate HTTP
+// response. Connection/circuit-breaker errors return 503; everything else
+// returns 500 with a generic message.
+func writeDBError(w http.ResponseWriter, err error, genericMsg string) {
+	if errors.Is(err, clickhouse.ErrNotConnected) || errors.Is(err, clickhouse.ErrCircuitOpen) {
+		response.WriteError(w, http.StatusServiceUnavailable, "clickhouse unavailable, please retry later")
+		return
+	}
+	response.WriteError(w, http.StatusInternalServerError, genericMsg)
 }
 
 // BuildInfo returns build metadata as JSON.

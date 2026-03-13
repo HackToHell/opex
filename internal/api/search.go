@@ -87,7 +87,7 @@ func (h *SearchHandlers) Search(w http.ResponseWriter, r *http.Request) {
 	traceIDs, err := h.ch.QueryTraceIDs(r.Context(), result.SQL)
 	if err != nil {
 		h.logger.Error("search query failed", "sql", result.SQL, "error", err)
-		response.WriteError(w, http.StatusInternalServerError, "query execution failed")
+		writeDBError(w, err, "query execution failed")
 		return
 	}
 
@@ -103,7 +103,7 @@ func (h *SearchHandlers) Search(w http.ResponseWriter, r *http.Request) {
 	spans, err := h.ch.QuerySpansByTraceIDs(r.Context(), traceIDs)
 	if err != nil {
 		h.logger.Error("fetch spans failed", "error", err)
-		response.WriteError(w, http.StatusInternalServerError, "failed to fetch trace details")
+		writeDBError(w, err, "failed to fetch trace details")
 		return
 	}
 

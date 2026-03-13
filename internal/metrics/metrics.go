@@ -71,6 +71,44 @@ var (
 			Help:      "Total number of spans inspected across all search queries.",
 		},
 	)
+
+	// QueryRetries counts the number of query retries due to transient errors.
+	QueryRetries = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: "opex",
+			Name:      "query_retries_total",
+			Help:      "Total number of query retries due to transient ClickHouse errors.",
+		},
+	)
+
+	// CircuitBreakerState tracks the current circuit breaker state.
+	// 0 = closed (healthy), 1 = half-open (probing), 2 = open (rejecting).
+	CircuitBreakerState = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "opex",
+			Name:      "clickhouse_circuit_state",
+			Help:      "Current circuit breaker state: 0=closed, 1=half-open, 2=open.",
+		},
+	)
+
+	// ClickHouseConnected tracks whether the client has an active connection.
+	// 1 = connected, 0 = disconnected.
+	ClickHouseConnected = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "opex",
+			Name:      "clickhouse_connected",
+			Help:      "Whether the ClickHouse connection is active: 1=connected, 0=disconnected.",
+		},
+	)
+
+	// ReconnectAttempts counts the number of reconnection attempts.
+	ReconnectAttempts = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: "opex",
+			Name:      "clickhouse_reconnect_attempts_total",
+			Help:      "Total number of ClickHouse reconnection attempts.",
+		},
+	)
 )
 
 // Handler returns the Prometheus metrics HTTP handler.
@@ -119,6 +157,30 @@ func ObserveClickHouseQuery(queryType string, duration time.Duration) {
 // RecordQueryError increments the error counter for a given error type.
 func RecordQueryError(errorType string) {
 	QueryErrors.WithLabelValues(errorType).Inc()
+}
+
+// RecordQueryRetry increments the retry counter.
+func RecordQueryRetry() {
+	QueryRetries.Inc()
+}
+
+// SetCircuitBreakerState sets the current circuit breaker state gauge.
+func SetCircuitBreakerState(state float64) {
+	CircuitBreakerState.Set(state)
+}
+
+// SetClickHouseConnected sets the connection status gauge.
+func SetClickHouseConnected(connected bool) {
+	if connected {
+		ClickHouseConnected.Set(1)
+	} else {
+		ClickHouseConnected.Set(0)
+	}
+}
+
+// RecordReconnectAttempt increments the reconnection attempt counter.
+func RecordReconnectAttempt() {
+	ReconnectAttempts.Inc()
 }
 
 // normalizeEndpoint collapses variable path segments into templates.

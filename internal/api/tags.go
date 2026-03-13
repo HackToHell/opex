@@ -47,7 +47,7 @@ func (h *TagHandlers) SearchTags(w http.ResponseWriter, r *http.Request) {
 		tags, err = h.queryMapKeys(r, "ResourceAttributes", start, end)
 		if err != nil {
 			h.logger.Error("query resource tags failed", "error", err)
-			response.WriteError(w, http.StatusInternalServerError, "failed to query tags")
+			writeDBError(w, err, "failed to query tags")
 			return
 		}
 	case "span":
@@ -55,7 +55,7 @@ func (h *TagHandlers) SearchTags(w http.ResponseWriter, r *http.Request) {
 		tags, err = h.queryMapKeys(r, "SpanAttributes", start, end)
 		if err != nil {
 			h.logger.Error("query span tags failed", "error", err)
-			response.WriteError(w, http.StatusInternalServerError, "failed to query tags")
+			writeDBError(w, err, "failed to query tags")
 			return
 		}
 	default:
@@ -137,7 +137,7 @@ func (h *TagHandlers) SearchTagValues(w http.ResponseWriter, r *http.Request) {
 	values, err := h.queryTagValues(r, tagName, start, end)
 	if err != nil {
 		h.logger.Error("query tag values failed", "tag", tagName, "error", err)
-		response.WriteError(w, http.StatusInternalServerError, "failed to query tag values")
+		writeDBError(w, err, "failed to query tag values")
 		return
 	}
 
@@ -163,7 +163,7 @@ func (h *TagHandlers) SearchTagValuesV2(w http.ResponseWriter, r *http.Request) 
 	values, err := h.queryTagValues(r, tagName, start, end)
 	if err != nil {
 		h.logger.Error("query tag values failed", "tag", tagName, "error", err)
-		response.WriteError(w, http.StatusInternalServerError, "failed to query tag values")
+		writeDBError(w, err, "failed to query tag values")
 		return
 	}
 

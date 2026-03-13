@@ -36,6 +36,16 @@ type ClickHouseConfig struct {
 	ResourceTagNamesTable string `yaml:"resource_tag_names_table"`
 	// ServiceNamesTable is the table name for cached service names.
 	ServiceNamesTable string `yaml:"service_names_table"`
+	// HealthCheckInterval is the interval between background health checks.
+	HealthCheckInterval time.Duration `yaml:"health_check_interval"`
+	// MaxRetries is the maximum number of retries for transient query errors.
+	MaxRetries int `yaml:"max_retries"`
+	// RetryBaseDelay is the base delay for exponential backoff on retries.
+	RetryBaseDelay time.Duration `yaml:"retry_base_delay"`
+	// CircuitBreakerThreshold is the number of consecutive failures before opening the circuit.
+	CircuitBreakerThreshold int `yaml:"circuit_breaker_threshold"`
+	// CircuitBreakerTimeout is the time to wait before transitioning from open to half-open.
+	CircuitBreakerTimeout time.Duration `yaml:"circuit_breaker_timeout"`
 }
 
 // QueryConfig holds query execution settings.
@@ -59,18 +69,23 @@ func DefaultConfig() *Config {
 	return &Config{
 		ListenAddr: ":8080",
 		ClickHouse: ClickHouseConfig{
-			DSN:                   "clickhouse://localhost:9000/default",
-			TracesTable:           "otel_traces",
-			MaxOpenConns:          10,
-			MaxIdleConns:          5,
-			ConnMaxLifetime:       5 * time.Minute,
-			DialTimeout:           5 * time.Second,
-			ReadTimeout:           30 * time.Second,
-			UseMatViews:           false,
-			TraceMetadataTable:    "otel_trace_metadata",
-			SpanTagNamesTable:     "otel_span_tag_names",
-			ResourceTagNamesTable: "otel_resource_tag_names",
-			ServiceNamesTable:     "otel_service_names",
+			DSN:                     "clickhouse://localhost:9000/default",
+			TracesTable:             "otel_traces",
+			MaxOpenConns:            10,
+			MaxIdleConns:            5,
+			ConnMaxLifetime:         5 * time.Minute,
+			DialTimeout:             5 * time.Second,
+			ReadTimeout:             30 * time.Second,
+			UseMatViews:             false,
+			TraceMetadataTable:      "otel_trace_metadata",
+			SpanTagNamesTable:       "otel_span_tag_names",
+			ResourceTagNamesTable:   "otel_resource_tag_names",
+			ServiceNamesTable:       "otel_service_names",
+			HealthCheckInterval:     5 * time.Second,
+			MaxRetries:              2,
+			RetryBaseDelay:          50 * time.Millisecond,
+			CircuitBreakerThreshold: 5,
+			CircuitBreakerTimeout:   10 * time.Second,
 		},
 		Query: QueryConfig{
 			MaxLimit:      100,

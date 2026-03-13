@@ -47,26 +47,26 @@ func (s *Server) registerRoutes() {
 	s.router.HandleFunc("/api/status/buildinfo", handlers.BuildInfo).Methods(http.MethodGet)
 	s.router.HandleFunc("/ready", s.readyHandler).Methods(http.MethodGet)
 
-	// Trace, search, and tag endpoints (require ClickHouse)
-	if s.ch != nil {
-		trace := api.NewTraceHandlers(s.ch, s.logger)
-		s.router.HandleFunc("/api/traces/{traceID}", trace.TraceByID).Methods(http.MethodGet)
-		s.router.HandleFunc("/api/v2/traces/{traceID}", trace.TraceByIDV2).Methods(http.MethodGet)
+	// Trace, search, tag, and metrics endpoints are always registered.
+	// When ClickHouse is unavailable, queries return ErrNotConnected which
+	// the handlers surface as HTTP 503.
+	trace := api.NewTraceHandlers(s.ch, s.logger)
+	s.router.HandleFunc("/api/traces/{traceID}", trace.TraceByID).Methods(http.MethodGet)
+	s.router.HandleFunc("/api/v2/traces/{traceID}", trace.TraceByIDV2).Methods(http.MethodGet)
 
-		search := api.NewSearchHandlers(s.ch, s.cfg.Query, s.logger)
-		s.router.HandleFunc("/api/search", search.Search).Methods(http.MethodGet)
+	search := api.NewSearchHandlers(s.ch, s.cfg.Query, s.logger)
+	s.router.HandleFunc("/api/search", search.Search).Methods(http.MethodGet)
 
-		tags := api.NewTagHandlers(s.ch, s.logger)
-		s.router.HandleFunc("/api/search/tags", tags.SearchTags).Methods(http.MethodGet)
-		s.router.HandleFunc("/api/v2/search/tags", tags.SearchTagsV2).Methods(http.MethodGet)
-		s.router.HandleFunc("/api/search/tag/{tagName:.*}/values", tags.SearchTagValues).Methods(http.MethodGet)
-		s.router.HandleFunc("/api/v2/search/tag/{tagName:.*}/values", tags.SearchTagValuesV2).Methods(http.MethodGet)
+	tags := api.NewTagHandlers(s.ch, s.logger)
+	s.router.HandleFunc("/api/search/tags", tags.SearchTags).Methods(http.MethodGet)
+	s.router.HandleFunc("/api/v2/search/tags", tags.SearchTagsV2).Methods(http.MethodGet)
+	s.router.HandleFunc("/api/search/tag/{tagName:.*}/values", tags.SearchTagValues).Methods(http.MethodGet)
+	s.router.HandleFunc("/api/v2/search/tag/{tagName:.*}/values", tags.SearchTagValuesV2).Methods(http.MethodGet)
 
-		metrics := api.NewMetricsHandlers(s.ch, s.cfg.Query, s.logger)
-		s.router.HandleFunc("/api/metrics/query_range", metrics.QueryRange).Methods(http.MethodGet)
-		s.router.HandleFunc("/api/metrics/query", metrics.QueryInstant).Methods(http.MethodGet)
-		s.router.HandleFunc("/api/metrics/summary", metrics.MetricsSummary).Methods(http.MethodGet)
-	}
+	metricsHandlers := api.NewMetricsHandlers(s.ch, s.cfg.Query, s.logger)
+	s.router.HandleFunc("/api/metrics/query_range", metricsHandlers.QueryRange).Methods(http.MethodGet)
+	s.router.HandleFunc("/api/metrics/query", metricsHandlers.QueryInstant).Methods(http.MethodGet)
+	s.router.HandleFunc("/api/metrics/summary", metricsHandlers.MetricsSummary).Methods(http.MethodGet)
 
 	// Prometheus metrics endpoint
 	s.router.Handle("/metrics", metrics.Handler()).Methods(http.MethodGet)
@@ -77,13 +77,20 @@ func (s *Server) registerRoutes() {
 }
 
 func (s *Server) readyHandler(w http.ResponseWriter, r *http.Request) {
-	if s.ch != nil {
-		if err := s.ch.Ping(r.Context()); err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("not ready: clickhouse unavailable"))
-			return
-		}
+	// Fast path: check the atomic connected flag first.
+	if !s.ch.Connected() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("not ready: clickhouse unavailable"))
+		return
 	}
+
+	// Connected flag is set — verify with a real ping to catch false positives.
+	if err := s.ch.Ping(r.Context()); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("not ready: clickhouse unavailable"))
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ready"))
 }
@@ -162,6 +169,10 @@ func (s *Server) Run() error {
 		IdleTimeout:  120 * time.Second,
 	}
 
+	// Start background ClickHouse health-check and reconnection loop.
+	healthCtx, healthCancel := context.WithCancel(context.Background())
+	s.ch.StartHealthCheck(healthCtx)
+
 	// Graceful shutdown
 	errCh := make(chan error, 1)
 	go func() {
@@ -178,6 +189,7 @@ func (s *Server) Run() error {
 	case sig := <-quit:
 		s.logger.Info("shutting down", "signal", sig.String())
 	case err := <-errCh:
+		healthCancel()
 		return err
 	}
 
@@ -185,13 +197,15 @@ func (s *Server) Run() error {
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
+		healthCancel()
 		return fmt.Errorf("server shutdown: %w", err)
 	}
 
+	// Stop the health-check loop before closing the connection
+	healthCancel()
+
 	// Close ClickHouse connection
-	if s.ch != nil {
-		_ = s.ch.Close()
-	}
+	_ = s.ch.Close()
 
 	s.logger.Info("server stopped")
 	return nil

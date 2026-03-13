@@ -58,12 +58,14 @@ func main() {
 		"log_format", cfg.Logging.Format,
 	)
 
-	// Connect to ClickHouse
+	// Connect to ClickHouse. If the initial connection fails, create a lazy
+	// client that will connect in the background. All routes are always
+	// registered — queries return 503 while disconnected.
 	var ch *clickhouse.Client
 	ch, err = clickhouse.New(cfg.ClickHouse, logger)
 	if err != nil {
-		logger.Warn("failed to connect to ClickHouse, running without trace endpoints", "error", err)
-		ch = nil
+		logger.Warn("failed to connect to ClickHouse, will retry in background", "error", err)
+		ch = clickhouse.NewLazy(cfg.ClickHouse, logger)
 	}
 
 	srv := server.New(cfg, ch, logger)

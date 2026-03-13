@@ -85,7 +85,7 @@ func (h *MetricsHandlers) QueryRange(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.ch.Query(r.Context(), sql)
 	if err != nil {
 		h.logger.Error("metrics query failed", "sql", sql, "error", err)
-		response.WriteError(w, http.StatusInternalServerError, "query execution failed")
+		writeDBError(w, err, "query execution failed")
 		return
 	}
 	defer func() { _ = rows.Close() }()
@@ -147,7 +147,7 @@ func (h *MetricsHandlers) QueryInstant(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.ch.Query(r.Context(), result.SQL)
 	if err != nil {
 		h.logger.Error("instant query failed", "sql", result.SQL, "error", err)
-		response.WriteError(w, http.StatusInternalServerError, "query execution failed")
+		writeDBError(w, err, "query execution failed")
 		return
 	}
 	defer func() { _ = rows.Close() }()
@@ -296,7 +296,7 @@ func (h *MetricsHandlers) MetricsSummary(w http.ResponseWriter, r *http.Request)
 	rows, err := h.ch.Query(r.Context(), sql)
 	if err != nil {
 		h.logger.Error("summary query failed", "sql", sql, "error", err)
-		response.WriteError(w, http.StatusInternalServerError, "query execution failed")
+		writeDBError(w, err, "query execution failed")
 		return
 	}
 	defer func() { _ = rows.Close() }()

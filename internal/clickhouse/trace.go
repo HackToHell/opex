@@ -45,7 +45,7 @@ func (c *Client) QueryTraceByID(ctx context.Context, traceID string) ([]SpanRow,
 	WHERE TraceId = $1
 	ORDER BY Timestamp ASC`, c.cfg.TracesTable)
 
-	rows, err := c.conn.Query(ctx, sql, traceID)
+	rows, err := c.Query(ctx, sql, traceID)
 	if err != nil {
 		return nil, fmt.Errorf("query trace %s: %w", traceID, err)
 	}
@@ -76,7 +76,7 @@ func (c *Client) QueryTraceByID(ctx context.Context, traceID string) ([]SpanRow,
 
 // QueryTraceIDs executes a raw SQL query and returns the matching trace IDs.
 func (c *Client) QueryTraceIDs(ctx context.Context, sql string) ([]string, error) {
-	rows, err := c.conn.Query(ctx, sql)
+	rows, err := c.Query(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("query trace IDs: %w", err)
 	}
@@ -134,7 +134,7 @@ func (c *Client) ServiceNamesTable() string {
 // QueryTagNamesFromView queries distinct tag names from a materialized view.
 func (c *Client) QueryTagNamesFromView(ctx context.Context, table string) ([]string, error) {
 	sql := fmt.Sprintf("SELECT TagName FROM %s ORDER BY TagName", table)
-	rows, err := c.conn.Query(ctx, sql)
+	rows, err := c.Query(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("query tag names from %s: %w", table, err)
 	}
@@ -154,7 +154,7 @@ func (c *Client) QueryTagNamesFromView(ctx context.Context, table string) ([]str
 // QueryServiceNamesFromView queries distinct service names from the service names view.
 func (c *Client) QueryServiceNamesFromView(ctx context.Context) ([]string, error) {
 	sql := fmt.Sprintf("SELECT ServiceName FROM %s ORDER BY ServiceName", c.ServiceNamesTable())
-	rows, err := c.conn.Query(ctx, sql)
+	rows, err := c.Query(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("query service names: %w", err)
 	}
@@ -188,7 +188,7 @@ func (c *Client) QuerySpansByTraceIDs(ctx context.Context, traceIDs []string) ([
 	WHERE TraceId IN ($1)
 	ORDER BY TraceId, Timestamp ASC`, c.cfg.TracesTable)
 
-	rows, err := c.conn.Query(ctx, sql, traceIDs)
+	rows, err := c.Query(ctx, sql, traceIDs)
 	if err != nil {
 		return nil, fmt.Errorf("query spans: %w", err)
 	}
@@ -208,6 +208,10 @@ func (c *Client) QuerySpansByTraceIDs(ctx context.Context, traceIDs []string) ([
 			return nil, fmt.Errorf("scan span row: %w", err)
 		}
 		spans = append(spans, s)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating rows: %w", err)
 	}
 
 	return spans, nil
