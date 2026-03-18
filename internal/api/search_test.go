@@ -5,10 +5,12 @@ import (
 	"time"
 
 	"github.com/hacktohell/opex/internal/clickhouse"
+	"github.com/hacktohell/opex/internal/response"
+	"github.com/hacktohell/opex/internal/tracequery"
 )
 
 func TestBuildSearchResponse_Empty(t *testing.T) {
-	resp := buildSearchResponse(nil, nil, "{}", 3, "", "")
+	resp := tracequery.BuildSearchResponseFromSpans(nil, nil, 3, 0, 0)
 	if resp == nil {
 		t.Fatal("expected non-nil response")
 	}
@@ -45,7 +47,7 @@ func TestBuildSearchResponse_Basic(t *testing.T) {
 	}
 	traceIDs := []string{"trace1"}
 
-	resp := buildSearchResponse(spans, traceIDs, "{}", 3, "", "")
+	resp := tracequery.BuildSearchResponseFromSpans(spans, traceIDs, 3, 0, 0)
 	if len(resp.Traces) != 1 {
 		t.Fatalf("expected 1 trace, got %d", len(resp.Traces))
 	}
@@ -81,19 +83,19 @@ func TestBuildSearchResponse_DurationFilter(t *testing.T) {
 	}
 
 	// minDuration=3s should filter out a 2s trace
-	resp := buildSearchResponse(spans, []string{"trace1"}, "{}", 3, "3s", "")
+	resp := tracequery.BuildSearchResponseFromSpans(spans, []string{"trace1"}, 3, 3*time.Second, 0)
 	if len(resp.Traces) != 0 {
 		t.Errorf("expected 0 traces with minDuration=3s, got %d", len(resp.Traces))
 	}
 
 	// maxDuration=1s should filter out a 2s trace
-	resp = buildSearchResponse(spans, []string{"trace1"}, "{}", 3, "", "1s")
+	resp = tracequery.BuildSearchResponseFromSpans(spans, []string{"trace1"}, 3, 0, 1*time.Second)
 	if len(resp.Traces) != 0 {
 		t.Errorf("expected 0 traces with maxDuration=1s, got %d", len(resp.Traces))
 	}
 
 	// minDuration=1s should include a 2s trace
-	resp = buildSearchResponse(spans, []string{"trace1"}, "{}", 3, "1s", "")
+	resp = tracequery.BuildSearchResponseFromSpans(spans, []string{"trace1"}, 3, 1*time.Second, 0)
 	if len(resp.Traces) != 1 {
 		t.Errorf("expected 1 trace with minDuration=1s, got %d", len(resp.Traces))
 	}
@@ -115,7 +117,7 @@ func TestBuildSearchResponse_SpanSets(t *testing.T) {
 	}
 
 	// spss=2 should limit spans in spanset to 2
-	resp := buildSearchResponse(spans, []string{"trace1"}, "{}", 2, "", "")
+	resp := tracequery.BuildSearchResponseFromSpans(spans, []string{"trace1"}, 2, 0, 0)
 	if len(resp.Traces) != 1 {
 		t.Fatalf("expected 1 trace, got %d", len(resp.Traces))
 	}
@@ -131,7 +133,7 @@ func TestBuildSearchResponse_SpanSets(t *testing.T) {
 	}
 
 	// spss=0 should not include spansets
-	resp = buildSearchResponse(spans, []string{"trace1"}, "{}", 0, "", "")
+	resp = tracequery.BuildSearchResponseFromSpans(spans, []string{"trace1"}, 0, 0, 0)
 	if len(resp.Traces[0].SpanSets) != 0 {
 		t.Errorf("expected 0 spansets with spss=0, got %d", len(resp.Traces[0].SpanSets))
 	}
@@ -172,7 +174,12 @@ func TestBuildTraceMetadata_ServiceStats(t *testing.T) {
 		},
 	}
 
-	meta := buildTraceMetadata(spans, 3)
+	// Use BuildSearchResponseFromSpans with spss=3 then check the first trace's service stats
+	resp := tracequery.BuildSearchResponseFromSpans(spans, []string{"trace1"}, 3, 0, 0)
+	if len(resp.Traces) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(resp.Traces))
+	}
+	meta := resp.Traces[0]
 
 	if meta.ServiceStats == nil {
 		t.Fatal("expected non-nil ServiceStats")
@@ -214,7 +221,7 @@ func TestBuildSearchResponse_MultipleTraces(t *testing.T) {
 	}
 	traceIDs := []string{"trace1", "trace2"}
 
-	resp := buildSearchResponse(spans, traceIDs, "{}", 3, "", "")
+	resp := tracequery.BuildSearchResponseFromSpans(spans, traceIDs, 3, 0, 0)
 	if len(resp.Traces) != 2 {
 		t.Fatalf("expected 2 traces, got %d", len(resp.Traces))
 	}
@@ -243,7 +250,7 @@ func TestBuildSearchResponse_Metrics(t *testing.T) {
 		},
 	}
 
-	resp := buildSearchResponse(spans, []string{"trace1"}, "{}", 3, "", "")
+	resp := tracequery.BuildSearchResponseFromSpans(spans, []string{"trace1"}, 3, 0, 0)
 	if resp.Metrics.InspectedTraces != 1 {
 		t.Errorf("expected InspectedTraces=1, got %d", resp.Metrics.InspectedTraces)
 	}
@@ -251,3 +258,6 @@ func TestBuildSearchResponse_Metrics(t *testing.T) {
 		t.Errorf("expected InspectedSpans=1, got %d", resp.Metrics.InspectedSpans)
 	}
 }
+
+// Ensure response package is used to avoid import errors.
+var _ = response.SearchResponse{}

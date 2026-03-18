@@ -20,3 +20,11 @@ query:
 logging:
   level: info
   format: text
+
+mcp:
+  enabled: false
+  max_concurrent: 5
+  query_timeout: 30s
+  max_results: 10
+  default_spss: 1
+  max_trace_spans: 50

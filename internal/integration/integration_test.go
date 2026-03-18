@@ -5,6 +5,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -84,6 +85,7 @@ func TestMain(m *testing.M) {
 	cfg.ClickHouse.TracesTable = "otel.otel_traces"
 	cfg.ClickHouse.DialTimeout = 10 * time.Second
 	cfg.ClickHouse.ReadTimeout = 30 * time.Second
+	cfg.MCP.Enabled = true
 
 	chClient, err = clickhouse.New(cfg.ClickHouse, logger)
 	if err != nil {
@@ -352,10 +354,22 @@ type queryRangeResponse struct {
 }
 
 type timeSeries struct {
-	Labels  []label  `json:"labels"`
-	Samples []sample `json:"samples"`
+	Labels  []seriesLabel `json:"labels"`
+	Samples []sample      `json:"samples"`
 }
 
+// seriesLabel matches the Tempo AnyValue-typed label used by metrics series
+// endpoints (query_range, query). The value is an object like {"stringValue":"x"}.
+type seriesLabel struct {
+	Key   string           `json:"key"`
+	Value seriesLabelValue `json:"value"`
+}
+
+type seriesLabelValue struct {
+	StringValue string `json:"stringValue"`
+}
+
+// label is a simple key-value label used by summary endpoints.
 type label struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
@@ -371,8 +385,8 @@ type queryInstantResponse struct {
 }
 
 type instantSeries struct {
-	Labels []label `json:"labels"`
-	Value  float64 `json:"value"`
+	Labels []seriesLabel `json:"labels"`
+	Value  float64       `json:"value"`
 }
 
 type metricsSummaryResponse struct {
@@ -1513,4 +1527,716 @@ func httpGetJSONURL(t *testing.T, fullURL string, result any) int {
 		t.Fatalf("decoding JSON from %s: %v\nbody: %s", fullURL, err, string(body))
 	}
 	return resp.StatusCode
+}
+
+// ---------------------------------------------------------------------------
+// MCP JSON-RPC helpers
+// ---------------------------------------------------------------------------
+
+// jsonRPCRequest is a JSON-RPC 2.0 request.
+type jsonRPCRequest struct {
+	JSONRPC string `json:"jsonrpc"`
+	ID      int    `json:"id"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
+
+// jsonRPCResponse is a JSON-RPC 2.0 response.
+type jsonRPCResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      int             `json:"id"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *jsonRPCError   `json:"error,omitempty"`
+}
+
+type jsonRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// mcpPost sends a JSON-RPC 2.0 request to the MCP endpoint and returns the parsed response.
+func mcpPost(t *testing.T, method string, params any) *jsonRPCResponse {
+	t.Helper()
+	req := jsonRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  method,
+		Params:  params,
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshaling MCP request: %v", err)
+	}
+
+	httpReq, err := http.NewRequest("POST", baseURL+"/api/mcp/", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("creating MCP request: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("MCP POST %s: %v", method, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading MCP response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("MCP POST %s: status %d, body: %s", method, resp.StatusCode, string(respBody))
+	}
+
+	var rpcResp jsonRPCResponse
+	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+		t.Fatalf("decoding MCP response: %v\nbody: %s", err, string(respBody))
+	}
+	return &rpcResp
+}
+
+// mcpCallTool is a convenience wrapper for tools/call.
+func mcpCallTool(t *testing.T, toolName string, args map[string]any) *jsonRPCResponse {
+	t.Helper()
+	return mcpPost(t, "tools/call", map[string]any{
+		"name":      toolName,
+		"arguments": args,
+	})
+}
+
+// mcpToolResult extracts the text content from a successful tool call result.
+func mcpToolResult(t *testing.T, resp *jsonRPCResponse) string {
+	t.Helper()
+	if resp.Error != nil {
+		t.Fatalf("unexpected JSON-RPC error: code=%d msg=%s", resp.Error.Code, resp.Error.Message)
+	}
+
+	var result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("decoding tool result: %v\nraw: %s", err, string(resp.Result))
+	}
+	if result.IsError {
+		if len(result.Content) > 0 {
+			t.Fatalf("MCP tool returned error: %s", result.Content[0].Text)
+		}
+		t.Fatal("MCP tool returned error with no content")
+	}
+	if len(result.Content) == 0 {
+		t.Fatal("MCP tool returned empty content")
+	}
+	return result.Content[0].Text
+}
+
+// mcpToolErrorText extracts the error text from a tool call that returned isError=true.
+func mcpToolErrorText(t *testing.T, resp *jsonRPCResponse) string {
+	t.Helper()
+	if resp.Error != nil {
+		t.Fatalf("unexpected JSON-RPC error: code=%d msg=%s", resp.Error.Code, resp.Error.Message)
+	}
+
+	var result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("decoding tool result: %v\nraw: %s", err, string(resp.Result))
+	}
+	if !result.IsError {
+		t.Fatal("expected MCP tool error, got success")
+	}
+	if len(result.Content) == 0 {
+		t.Fatal("MCP tool error with no content")
+	}
+	return result.Content[0].Text
+}
+
+// ==========================================================================
+// MCP Endpoint Tests
+// ==========================================================================
+
+func TestMCPToolsList(t *testing.T) {
+	resp := mcpPost(t, "tools/list", map[string]any{})
+	if resp.Error != nil {
+		t.Fatalf("tools/list error: %v", resp.Error)
+	}
+
+	var result struct {
+		Tools []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("decoding tools/list: %v", err)
+	}
+
+	expectedTools := []string{
+		"traceql-search",
+		"traceql-metrics-instant",
+		"traceql-metrics-range",
+		"get-trace",
+		"get-attribute-names",
+		"get-attribute-values",
+		"docs-traceql",
+	}
+
+	toolNames := make([]string, len(result.Tools))
+	for i, tool := range result.Tools {
+		toolNames[i] = tool.Name
+	}
+	sort.Strings(toolNames)
+	sort.Strings(expectedTools)
+
+	if len(toolNames) != len(expectedTools) {
+		t.Fatalf("tool count = %d, want %d\ngot: %v", len(toolNames), len(expectedTools), toolNames)
+	}
+	for i, name := range expectedTools {
+		if toolNames[i] != name {
+			t.Errorf("tool[%d] = %q, want %q", i, toolNames[i], name)
+		}
+	}
+}
+
+func TestMCPResourcesList(t *testing.T) {
+	resp := mcpPost(t, "resources/list", map[string]any{})
+	if resp.Error != nil {
+		t.Fatalf("resources/list error: %v", resp.Error)
+	}
+
+	var result struct {
+		Resources []struct {
+			URI      string `json:"uri"`
+			Name     string `json:"name"`
+			MIMEType string `json:"mimeType"`
+		} `json:"resources"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("decoding resources/list: %v", err)
+	}
+
+	expectedURIs := []string{
+		"docs://traceql/basic",
+		"docs://traceql/aggregates",
+		"docs://traceql/structural",
+		"docs://traceql/metrics",
+	}
+
+	if len(result.Resources) != len(expectedURIs) {
+		t.Fatalf("resource count = %d, want %d", len(result.Resources), len(expectedURIs))
+	}
+
+	uris := make([]string, len(result.Resources))
+	for i, r := range result.Resources {
+		uris[i] = r.URI
+	}
+	sort.Strings(uris)
+	sort.Strings(expectedURIs)
+	for i, uri := range expectedURIs {
+		if uris[i] != uri {
+			t.Errorf("resource[%d] URI = %q, want %q", i, uris[i], uri)
+		}
+	}
+}
+
+func TestMCPResourcesRead(t *testing.T) {
+	t.Run("Basic", func(t *testing.T) {
+		resp := mcpPost(t, "resources/read", map[string]any{
+			"uri": "docs://traceql/basic",
+		})
+		if resp.Error != nil {
+			t.Fatalf("resources/read error: %v", resp.Error)
+		}
+
+		var result struct {
+			Contents []struct {
+				URI      string `json:"uri"`
+				MIMEType string `json:"mimeType"`
+				Text     string `json:"text"`
+			} `json:"contents"`
+		}
+		if err := json.Unmarshal(resp.Result, &result); err != nil {
+			t.Fatalf("decoding resources/read: %v", err)
+		}
+		if len(result.Contents) == 0 {
+			t.Fatal("expected non-empty contents")
+		}
+		if result.Contents[0].Text == "" {
+			t.Error("expected non-empty text for basic docs")
+		}
+		if result.Contents[0].MIMEType != "text/markdown" {
+			t.Errorf("mimeType = %q, want %q", result.Contents[0].MIMEType, "text/markdown")
+		}
+	})
+
+	t.Run("AllDocTypes", func(t *testing.T) {
+		for _, uri := range []string{
+			"docs://traceql/basic",
+			"docs://traceql/aggregates",
+			"docs://traceql/structural",
+			"docs://traceql/metrics",
+		} {
+			resp := mcpPost(t, "resources/read", map[string]any{"uri": uri})
+			if resp.Error != nil {
+				t.Errorf("resources/read %s: error %v", uri, resp.Error)
+			}
+		}
+	})
+}
+
+func TestMCPSearch(t *testing.T) {
+	t.Run("EmptyFilter", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-search", map[string]any{
+			"query": "{}",
+			"start": seedStart,
+			"end":   seedEnd,
+		})
+		text := mcpToolResult(t, resp)
+
+		var result searchResponse
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			t.Fatalf("decoding search result: %v", err)
+		}
+		if len(result.Traces) != 7 {
+			t.Errorf("trace count = %d, want 7", len(result.Traces))
+		}
+	})
+
+	t.Run("ByServiceName", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-search", map[string]any{
+			"query": `{resource.service.name = "frontend"}`,
+			"start": seedStart,
+			"end":   seedEnd,
+		})
+		text := mcpToolResult(t, resp)
+
+		var result searchResponse
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			t.Fatalf("decoding search result: %v", err)
+		}
+		if len(result.Traces) < 1 {
+			t.Fatal("expected at least 1 trace for frontend service")
+		}
+	})
+
+	t.Run("ByStatus", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-search", map[string]any{
+			"query": `{status=error}`,
+			"start": seedStart,
+			"end":   seedEnd,
+		})
+		text := mcpToolResult(t, resp)
+
+		var result searchResponse
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			t.Fatalf("decoding search result: %v", err)
+		}
+		if len(result.Traces) < 1 {
+			t.Fatal("expected at least 1 trace with error status")
+		}
+		if !hasTraceID(result.Traces, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") {
+			t.Error("expected trace bbbb... in error results")
+		}
+	})
+
+	t.Run("WithLimit", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-search", map[string]any{
+			"query": "{}",
+			"start": seedStart,
+			"end":   seedEnd,
+			"limit": 2,
+		})
+		text := mcpToolResult(t, resp)
+
+		var result searchResponse
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			t.Fatalf("decoding search result: %v", err)
+		}
+		if len(result.Traces) > 2 {
+			t.Errorf("trace count = %d, want <= 2", len(result.Traces))
+		}
+	})
+
+	t.Run("RFC3339Time", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-search", map[string]any{
+			"query": "{}",
+			"start": "2025-01-15T09:00:00Z",
+			"end":   "2025-01-15T13:00:00Z",
+		})
+		text := mcpToolResult(t, resp)
+
+		var result searchResponse
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			t.Fatalf("decoding search result: %v", err)
+		}
+		if len(result.Traces) != 7 {
+			t.Errorf("trace count = %d, want 7", len(result.Traces))
+		}
+	})
+
+	t.Run("EmptyResult", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-search", map[string]any{
+			"query": `{name="nonexistent_span_xyz"}`,
+			"start": seedStart,
+			"end":   seedEnd,
+		})
+		text := mcpToolResult(t, resp)
+
+		var result searchResponse
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			t.Fatalf("decoding search result: %v", err)
+		}
+		if len(result.Traces) != 0 {
+			t.Errorf("trace count = %d, want 0", len(result.Traces))
+		}
+	})
+
+	t.Run("MissingQuery", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-search", map[string]any{
+			"start": seedStart,
+			"end":   seedEnd,
+		})
+		_ = mcpToolErrorText(t, resp)
+	})
+
+	t.Run("InvalidQuery", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-search", map[string]any{
+			"query": "{invalid!!!}",
+			"start": seedStart,
+			"end":   seedEnd,
+		})
+		errText := mcpToolErrorText(t, resp)
+		if errText == "" {
+			t.Error("expected non-empty error text")
+		}
+	})
+}
+
+func TestMCPGetTrace(t *testing.T) {
+	t.Run("Found", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-trace", map[string]any{
+			"trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		})
+		text := mcpToolResult(t, resp)
+
+		var result struct {
+			TraceID    string         `json:"trace_id"`
+			TotalSpans int            `json:"total_spans"`
+			ShownSpans int            `json:"shown_spans"`
+			Truncated  bool           `json:"truncated"`
+			Services   []string       `json:"services"`
+			ErrorCount int            `json:"error_count"`
+			Trace      *traceResponse `json:"trace"`
+		}
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			t.Fatalf("decoding get-trace result: %v", err)
+		}
+		if result.TraceID != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+			t.Errorf("traceID = %q, want aaaa...", result.TraceID)
+		}
+		if result.TotalSpans != 4 {
+			t.Errorf("totalSpans = %d, want 4", result.TotalSpans)
+		}
+		if result.Trace == nil {
+			t.Fatal("trace is nil")
+		}
+		if len(result.Services) < 1 {
+			t.Error("expected at least 1 service")
+		}
+	})
+
+	t.Run("ErrorTrace", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-trace", map[string]any{
+			"trace_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		})
+		text := mcpToolResult(t, resp)
+
+		var result struct {
+			TotalSpans int  `json:"total_spans"`
+			ErrorCount int  `json:"error_count"`
+			Truncated  bool `json:"truncated"`
+		}
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			t.Fatalf("decoding get-trace result: %v", err)
+		}
+		if result.TotalSpans != 5 {
+			t.Errorf("totalSpans = %d, want 5", result.TotalSpans)
+		}
+		if result.ErrorCount < 1 {
+			t.Error("expected at least 1 error span")
+		}
+	})
+
+	t.Run("ShortTraceID", func(t *testing.T) {
+		// 16-char hex is accepted by validation but won't match 32-char seed data
+		resp := mcpCallTool(t, "get-trace", map[string]any{
+			"trace_id": "eeeeeeeeeeeeeeee",
+		})
+		// Should return "trace not found" since seed data uses 32-char IDs
+		errText := mcpToolErrorText(t, resp)
+		if errText != "trace not found" {
+			t.Errorf("error = %q, want %q", errText, "trace not found")
+		}
+	})
+
+	t.Run("NotFound", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-trace", map[string]any{
+			"trace_id": "00000000000000000000000000000000",
+		})
+		errText := mcpToolErrorText(t, resp)
+		if errText != "trace not found" {
+			t.Errorf("error = %q, want %q", errText, "trace not found")
+		}
+	})
+
+	t.Run("InvalidHex", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-trace", map[string]any{
+			"trace_id": "not-valid-hex",
+		})
+		errText := mcpToolErrorText(t, resp)
+		if errText == "" {
+			t.Error("expected non-empty error for invalid hex")
+		}
+	})
+
+	t.Run("MissingTraceID", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-trace", map[string]any{})
+		_ = mcpToolErrorText(t, resp)
+	})
+}
+
+func TestMCPGetAttributeNames(t *testing.T) {
+	t.Run("AllScopes", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-attribute-names", map[string]any{})
+		text := mcpToolResult(t, resp)
+
+		var result struct {
+			Scopes []tagsV2Scope `json:"scopes"`
+		}
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			// Might be a flat tag names response
+			var flatResult struct {
+				TagNames []string `json:"tagNames"`
+			}
+			if err2 := json.Unmarshal([]byte(text), &flatResult); err2 != nil {
+				t.Fatalf("decoding get-attribute-names result: %v\nraw: %s", err, text)
+			}
+			if len(flatResult.TagNames) == 0 {
+				t.Error("expected non-empty tag names")
+			}
+			return
+		}
+		if len(result.Scopes) < 1 {
+			t.Error("expected at least 1 scope")
+		}
+	})
+
+	t.Run("SpanScope", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-attribute-names", map[string]any{
+			"scope": "span",
+		})
+		_ = mcpToolResult(t, resp) // Just verify it succeeds
+	})
+
+	t.Run("ResourceScope", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-attribute-names", map[string]any{
+			"scope": "resource",
+		})
+		_ = mcpToolResult(t, resp)
+	})
+
+	t.Run("IntrinsicScope", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-attribute-names", map[string]any{
+			"scope": "intrinsic",
+		})
+		_ = mcpToolResult(t, resp)
+	})
+
+	t.Run("InvalidScope", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-attribute-names", map[string]any{
+			"scope": "invalid",
+		})
+		_ = mcpToolErrorText(t, resp)
+	})
+}
+
+func TestMCPGetAttributeValues(t *testing.T) {
+	t.Run("ServiceName", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-attribute-values", map[string]any{
+			"name":  "service.name",
+			"start": seedStart,
+			"end":   seedEnd,
+		})
+		text := mcpToolResult(t, resp)
+
+		var result struct {
+			TagValues []tagValue `json:"tagValues"`
+		}
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			// Try flat string array format
+			var flatResult struct {
+				TagValues []string `json:"tagValues"`
+			}
+			if err2 := json.Unmarshal([]byte(text), &flatResult); err2 != nil {
+				t.Fatalf("decoding get-attribute-values result: %v\nraw: %s", err, text)
+			}
+			if len(flatResult.TagValues) < 5 {
+				t.Errorf("service count = %d, want >= 5", len(flatResult.TagValues))
+			}
+			return
+		}
+		if len(result.TagValues) < 5 {
+			t.Errorf("service count = %d, want >= 5", len(result.TagValues))
+		}
+	})
+
+	t.Run("MissingName", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-attribute-values", map[string]any{
+			"start": seedStart,
+			"end":   seedEnd,
+		})
+		_ = mcpToolErrorText(t, resp)
+	})
+
+	t.Run("InvalidName", func(t *testing.T) {
+		resp := mcpCallTool(t, "get-attribute-values", map[string]any{
+			"name":  "foo;DROP TABLE",
+			"start": seedStart,
+			"end":   seedEnd,
+		})
+		_ = mcpToolErrorText(t, resp)
+	})
+}
+
+func TestMCPMetricsInstant(t *testing.T) {
+	t.Run("Count", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-metrics-instant", map[string]any{
+			"query": "{} | count_over_time()",
+			"start": seedStart,
+			"end":   seedEnd,
+		})
+		text := mcpToolResult(t, resp)
+
+		var result queryInstantResponse
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			t.Fatalf("decoding metrics instant result: %v", err)
+		}
+		if len(result.Series) == 0 {
+			t.Fatal("expected at least 1 series")
+		}
+	})
+
+	t.Run("MissingQuery", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-metrics-instant", map[string]any{
+			"start": seedStart,
+			"end":   seedEnd,
+		})
+		_ = mcpToolErrorText(t, resp)
+	})
+}
+
+func TestMCPMetricsRange(t *testing.T) {
+	t.Run("Rate", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-metrics-range", map[string]any{
+			"query": "{} | rate()",
+			"start": seedStart,
+			"end":   seedEnd,
+			"step":  "3600s",
+		})
+		text := mcpToolResult(t, resp)
+
+		var result queryRangeResponse
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			t.Fatalf("decoding metrics range result: %v", err)
+		}
+		if len(result.Series) == 0 {
+			t.Fatal("expected at least 1 series")
+		}
+		if len(result.Series[0].Samples) == 0 {
+			t.Fatal("expected at least 1 sample")
+		}
+	})
+
+	t.Run("CountOverTime", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-metrics-range", map[string]any{
+			"query": "{} | count_over_time()",
+			"start": seedStart,
+			"end":   seedEnd,
+			"step":  "3600s",
+		})
+		text := mcpToolResult(t, resp)
+
+		var result queryRangeResponse
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			t.Fatalf("decoding metrics range result: %v", err)
+		}
+		if len(result.Series) == 0 {
+			t.Fatal("expected at least 1 series")
+		}
+	})
+
+	t.Run("InvalidStep", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-metrics-range", map[string]any{
+			"query": "{} | rate()",
+			"start": seedStart,
+			"end":   seedEnd,
+			"step":  "not-a-duration",
+		})
+		_ = mcpToolErrorText(t, resp)
+	})
+
+	t.Run("MissingQuery", func(t *testing.T) {
+		resp := mcpCallTool(t, "traceql-metrics-range", map[string]any{
+			"start": seedStart,
+			"end":   seedEnd,
+		})
+		_ = mcpToolErrorText(t, resp)
+	})
+}
+
+func TestMCPDocs(t *testing.T) {
+	t.Run("Basic", func(t *testing.T) {
+		resp := mcpCallTool(t, "docs-traceql", map[string]any{
+			"name": "basic",
+		})
+		text := mcpToolResult(t, resp)
+		if text == "" {
+			t.Error("expected non-empty docs content")
+		}
+	})
+
+	t.Run("AllTypes", func(t *testing.T) {
+		for _, docType := range []string{"basic", "aggregates", "structural", "metrics"} {
+			t.Run(docType, func(t *testing.T) {
+				resp := mcpCallTool(t, "docs-traceql", map[string]any{
+					"name": docType,
+				})
+				text := mcpToolResult(t, resp)
+				if text == "" {
+					t.Errorf("expected non-empty docs for %q", docType)
+				}
+			})
+		}
+	})
+
+	t.Run("InvalidType", func(t *testing.T) {
+		resp := mcpCallTool(t, "docs-traceql", map[string]any{
+			"name": "nonexistent",
+		})
+		_ = mcpToolErrorText(t, resp)
+	})
+
+	t.Run("MissingName", func(t *testing.T) {
+		resp := mcpCallTool(t, "docs-traceql", map[string]any{})
+		_ = mcpToolErrorText(t, resp)
+	})
 }

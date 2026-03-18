@@ -10,6 +10,7 @@ import (
 
 	"github.com/hacktohell/opex/internal/clickhouse"
 	"github.com/hacktohell/opex/internal/response"
+	"github.com/hacktohell/opex/internal/tracequery"
 )
 
 // Build-time variables, injected via -ldflags.
@@ -42,10 +43,14 @@ func (h *Handlers) Ready(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ready"))
 }
 
-// writeDBError inspects a ClickHouse error and writes the appropriate HTTP
-// response. Connection/circuit-breaker errors return 503; everything else
-// returns 500 with a generic message.
+// writeDBError inspects the error and writes the appropriate HTTP response.
+// Input/validation errors return 400; connection/circuit-breaker errors
+// return 503; everything else returns 500 with a generic message.
 func writeDBError(w http.ResponseWriter, err error, genericMsg string) {
+	if tracequery.IsInputError(err) {
+		response.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if errors.Is(err, clickhouse.ErrNotConnected) || errors.Is(err, clickhouse.ErrCircuitOpen) {
 		response.WriteError(w, http.StatusServiceUnavailable, "clickhouse unavailable, please retry later")
 		return

@@ -15,6 +15,7 @@ type Config struct {
 	ClickHouse ClickHouseConfig `yaml:"clickhouse"`
 	Query      QueryConfig      `yaml:"query"`
 	Logging    LoggingConfig    `yaml:"logging"`
+	MCP        MCPConfig        `yaml:"mcp"`
 }
 
 // ClickHouseConfig holds ClickHouse connection settings.
@@ -64,6 +65,22 @@ type LoggingConfig struct {
 	Format string `yaml:"format"`
 }
 
+// MCPConfig holds MCP server settings.
+type MCPConfig struct {
+	// Enabled controls whether the MCP server is started.
+	Enabled bool `yaml:"enabled"`
+	// MaxConcurrent limits the number of concurrent MCP tool invocations.
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// QueryTimeout is the per-tool-invocation timeout.
+	QueryTimeout time.Duration `yaml:"query_timeout"`
+	// MaxResults is the default limit for trace search results.
+	MaxResults int `yaml:"max_results"`
+	// DefaultSpss is the default spans-per-spanset for MCP search results.
+	DefaultSpss int `yaml:"default_spss"`
+	// MaxTraceSpans is the maximum number of spans returned by get-trace.
+	MaxTraceSpans int `yaml:"max_trace_spans"`
+}
+
 // DefaultConfig returns a Config with sane defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -99,7 +116,34 @@ func DefaultConfig() *Config {
 			Level:  "info",
 			Format: "json",
 		},
+		MCP: MCPConfig{
+			Enabled:       false,
+			MaxConcurrent: 5,
+			QueryTimeout:  30 * time.Second,
+			MaxResults:    10,
+			DefaultSpss:   1,
+			MaxTraceSpans: 50,
+		},
 	}
+}
+
+// Validate checks the configuration for invalid values.
+func (c *Config) Validate() error {
+	if c.MCP.Enabled {
+		if c.MCP.MaxConcurrent <= 0 {
+			return fmt.Errorf("mcp.max_concurrent must be > 0, got %d", c.MCP.MaxConcurrent)
+		}
+		if c.MCP.QueryTimeout <= 0 {
+			return fmt.Errorf("mcp.query_timeout must be positive, got %v", c.MCP.QueryTimeout)
+		}
+		if c.MCP.MaxResults <= 0 {
+			return fmt.Errorf("mcp.max_results must be > 0, got %d", c.MCP.MaxResults)
+		}
+		if c.MCP.MaxTraceSpans <= 0 {
+			return fmt.Errorf("mcp.max_trace_spans must be > 0, got %d", c.MCP.MaxTraceSpans)
+		}
+	}
+	return nil
 }
 
 // LoadFromFile reads a YAML config file and merges it with defaults.

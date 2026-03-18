@@ -15,6 +15,7 @@ import (
 	"github.com/hacktohell/opex/internal/api"
 	"github.com/hacktohell/opex/internal/clickhouse"
 	"github.com/hacktohell/opex/internal/config"
+	opexmcp "github.com/hacktohell/opex/internal/mcp"
 	"github.com/hacktohell/opex/internal/metrics"
 )
 
@@ -67,6 +68,13 @@ func (s *Server) registerRoutes() {
 	s.router.HandleFunc("/api/metrics/query_range", metricsHandlers.QueryRange).Methods(http.MethodGet)
 	s.router.HandleFunc("/api/metrics/query", metricsHandlers.QueryInstant).Methods(http.MethodGet)
 	s.router.HandleFunc("/api/metrics/summary", metricsHandlers.MetricsSummary).Methods(http.MethodGet)
+
+	// MCP server (if enabled)
+	if s.cfg.MCP.Enabled {
+		mcpServer := opexmcp.New(s.ch, s.cfg.Query, s.cfg.MCP, s.logger.With("component", "mcp"))
+		s.router.PathPrefix("/api/mcp/").Handler(http.StripPrefix("/api/mcp", mcpServer))
+		s.logger.Info("MCP server enabled", "path", "/api/mcp/")
+	}
 
 	// Prometheus metrics endpoint
 	s.router.Handle("/metrics", metrics.Handler()).Methods(http.MethodGet)

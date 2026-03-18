@@ -2,6 +2,8 @@ package api
 
 import (
 	"testing"
+
+	"github.com/hacktohell/opex/internal/tracequery"
 )
 
 func TestDedup(t *testing.T) {
@@ -58,9 +60,9 @@ func TestDedup(t *testing.T) {
 }
 
 func TestIntrinsicTagsAreDefined(t *testing.T) {
-	// Verify intrinsicTags are a non-empty list of expected intrinsics
-	if len(intrinsicTags) == 0 {
-		t.Fatal("intrinsicTags should not be empty")
+	// Verify IntrinsicTags are a non-empty list of expected intrinsics
+	if len(tracequery.IntrinsicTags) == 0 {
+		t.Fatal("IntrinsicTags should not be empty")
 	}
 
 	expected := map[string]bool{
@@ -74,7 +76,7 @@ func TestIntrinsicTagsAreDefined(t *testing.T) {
 		"traceDuration":   true,
 	}
 
-	for _, tag := range intrinsicTags {
+	for _, tag := range tracequery.IntrinsicTags {
 		if !expected[tag] {
 			t.Errorf("unexpected intrinsic tag: %q", tag)
 		}
@@ -82,7 +84,7 @@ func TestIntrinsicTagsAreDefined(t *testing.T) {
 
 	for tag := range expected {
 		found := false
-		for _, it := range intrinsicTags {
+		for _, it := range tracequery.IntrinsicTags {
 			if it == tag {
 				found = true
 				break

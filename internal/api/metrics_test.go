@@ -1,11 +1,11 @@
 package api
 
 import (
-	"math"
 	"testing"
 	"time"
 
 	"github.com/hacktohell/opex/internal/traceql"
+	"github.com/hacktohell/opex/internal/tracequery"
 )
 
 func TestParseStep(t *testing.T) {
@@ -123,7 +123,7 @@ func TestExtractMetricsAggregate(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			ma, fp := extractMetricsAggregate(tc.root)
+			ma, fp := tracequery.ExtractMetricsAggregate(tc.root)
 			if tc.wantNil {
 				if ma != nil {
 					t.Fatalf("expected nil MetricsAggregate, got %v", ma)
@@ -201,9 +201,9 @@ func TestAttributeToColumn(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := attributeToColumn(&tc.attr)
+			got := tracequery.AttributeToColumn(&tc.attr)
 			if got != tc.want {
-				t.Errorf("attributeToColumn() = %q, want %q", got, tc.want)
+				t.Errorf("AttributeToColumn() = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -223,41 +223,9 @@ func TestGroupByToColumn(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := groupByToColumn(tc.input)
+		got := tracequery.GroupByToColumn(tc.input)
 		if got != tc.want {
-			t.Errorf("groupByToColumn(%q) = %q, want %q", tc.input, got, tc.want)
+			t.Errorf("GroupByToColumn(%q) = %q, want %q", tc.input, got, tc.want)
 		}
-	}
-}
-
-func TestToFloat64(t *testing.T) {
-	tests := []struct {
-		name  string
-		input any
-		want  float64
-		isNaN bool
-	}{
-		{"float64", float64(3.14), 3.14, false},
-		{"float32", float32(2.5), 2.5, false},
-		{"int64", int64(42), 42.0, false},
-		{"int32", int32(10), 10.0, false},
-		{"uint64", uint64(100), 100.0, false},
-		{"int", int(7), 7.0, false},
-		{"string", "hello", 0, true}, // should be NaN
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := toFloat64(tc.input)
-			if tc.isNaN {
-				if !math.IsNaN(got) {
-					t.Errorf("expected NaN, got %f", got)
-				}
-			} else {
-				if got != tc.want {
-					t.Errorf("toFloat64() = %f, want %f", got, tc.want)
-				}
-			}
-		})
 	}
 }

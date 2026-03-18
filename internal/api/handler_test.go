@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+
+	"github.com/hacktohell/opex/internal/tracequery"
 )
 
 func TestEcho(t *testing.T) {
@@ -90,9 +92,9 @@ func TestNormalizeTraceID(t *testing.T) {
 		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 	}
 	for _, tc := range tests {
-		result := normalizeTraceID(tc.input)
+		result := tracequery.NormalizeTraceID(tc.input)
 		if result != tc.expected {
-			t.Errorf("normalizeTraceID(%q) = %q, want %q", tc.input, result, tc.expected)
+			t.Errorf("NormalizeTraceID(%q) = %q, want %q", tc.input, result, tc.expected)
 		}
 	}
 }
@@ -109,9 +111,9 @@ func TestIsValidHexTraceID(t *testing.T) {
 		{"aabbccddeeff00112233445566778899", true}, // 32 hex chars
 	}
 	for _, tc := range tests {
-		result := isValidHexTraceID(tc.input)
+		result := tracequery.IsValidHexTraceID(tc.input)
 		if result != tc.valid {
-			t.Errorf("isValidHexTraceID(%q) = %v, want %v", tc.input, result, tc.valid)
+			t.Errorf("IsValidHexTraceID(%q) = %v, want %v", tc.input, result, tc.valid)
 		}
 	}
 }

@@ -1,14 +1,13 @@
 package api
 
 import (
-	"encoding/hex"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/hacktohell/opex/internal/clickhouse"
 	"github.com/hacktohell/opex/internal/response"
+	"github.com/hacktohell/opex/internal/tracequery"
 )
 
 // TraceHandlers holds handlers for trace-by-ID endpoints.
@@ -33,25 +32,25 @@ func (h *TraceHandlers) TraceByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate and normalize trace ID (hex-encoded, 16 or 32 bytes)
-	traceID = normalizeTraceID(traceID)
-	if !isValidHexTraceID(traceID) {
+	traceID = tracequery.NormalizeTraceID(traceID)
+	if !tracequery.IsValidHexTraceID(traceID) {
 		response.WriteError(w, http.StatusBadRequest, "invalid traceID format")
 		return
 	}
 
-	spans, err := h.ch.QueryTraceByID(r.Context(), traceID)
+	// Call shared service
+	trace, err := tracequery.GetTraceByID(r.Context(), h.ch, traceID)
 	if err != nil {
 		h.logger.Error("failed to query trace", "traceID", traceID, "error", err)
 		writeDBError(w, err, "internal server error")
 		return
 	}
 
-	if len(spans) == 0 {
+	if trace == nil {
 		response.WriteError(w, http.StatusNotFound, "trace not found")
 		return
 	}
 
-	trace := response.BuildTrace(spans)
 	if err := response.WriteTrace(w, r, http.StatusOK, trace); err != nil {
 		h.logger.Error("failed to marshal trace response", "traceID", traceID, "error", err)
 		response.WriteError(w, http.StatusInternalServerError, "internal server error")
@@ -68,22 +67,18 @@ func (h *TraceHandlers) TraceByIDV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	traceID = normalizeTraceID(traceID)
-	if !isValidHexTraceID(traceID) {
+	traceID = tracequery.NormalizeTraceID(traceID)
+	if !tracequery.IsValidHexTraceID(traceID) {
 		response.WriteError(w, http.StatusBadRequest, "invalid traceID format")
 		return
 	}
 
-	spans, err := h.ch.QueryTraceByID(r.Context(), traceID)
+	// Call shared service
+	trace, err := tracequery.GetTraceByID(r.Context(), h.ch, traceID)
 	if err != nil {
 		h.logger.Error("failed to query trace", "traceID", traceID, "error", err)
 		writeDBError(w, err, "internal server error")
 		return
-	}
-
-	var trace *response.Trace
-	if len(spans) > 0 {
-		trace = response.BuildTrace(spans)
 	}
 
 	resp := &response.TraceByIDResponse{
@@ -94,19 +89,4 @@ func (h *TraceHandlers) TraceByIDV2(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to marshal trace-by-id response", "traceID", traceID, "error", err)
 		response.WriteError(w, http.StatusInternalServerError, "internal server error")
 	}
-}
-
-// normalizeTraceID strips hyphens and lowercases the trace ID.
-func normalizeTraceID(id string) string {
-	id = strings.ReplaceAll(id, "-", "")
-	return strings.ToLower(id)
-}
-
-// isValidHexTraceID checks if a trace ID is valid hex (16 or 32 bytes).
-func isValidHexTraceID(id string) bool {
-	if len(id) != 32 && len(id) != 16 {
-		return false
-	}
-	_, err := hex.DecodeString(id)
-	return err == nil
 }

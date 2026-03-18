@@ -243,22 +243,22 @@ func attributeToSQL(attr *traceql.Attribute) string {
 
 	switch attr.Scope {
 	case traceql.AttributeScopeSpan:
-		return fmt.Sprintf("SpanAttributes['%s']", attr.Name)
+		return fmt.Sprintf("SpanAttributes['%s']", escapeSQL(attr.Name))
 	case traceql.AttributeScopeResource:
 		// Special case
 		if attr.Name == "service.name" {
 			return "ServiceName"
 		}
-		return fmt.Sprintf("ResourceAttributes['%s']", attr.Name)
+		return fmt.Sprintf("ResourceAttributes['%s']", escapeSQL(attr.Name))
 	case traceql.AttributeScopeNone:
 		if attr.Name == "service.name" {
 			return "ServiceName"
 		}
 		// For unscoped, prefer SpanAttributes as the column reference.
 		// The comparison function handles the OR fallback.
-		return fmt.Sprintf("SpanAttributes['%s']", attr.Name)
+		return fmt.Sprintf("SpanAttributes['%s']", escapeSQL(attr.Name))
 	default:
-		return fmt.Sprintf("SpanAttributes['%s']", attr.Name)
+		return fmt.Sprintf("SpanAttributes['%s']", escapeSQL(attr.Name))
 	}
 }
 

@@ -109,6 +109,37 @@ var (
 			Help:      "Total number of ClickHouse reconnection attempts.",
 		},
 	)
+
+	// MCPToolCalls counts the total number of MCP tool calls.
+	MCPToolCalls = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "opex",
+			Name:      "mcp_tool_calls_total",
+			Help:      "Total number of MCP tool calls.",
+		},
+		[]string{"tool"},
+	)
+
+	// MCPToolDuration tracks the duration of MCP tool calls.
+	MCPToolDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "opex",
+			Name:      "mcp_tool_duration_seconds",
+			Help:      "Duration of MCP tool calls.",
+			Buckets:   prometheus.DefBuckets,
+		},
+		[]string{"tool"},
+	)
+
+	// MCPToolErrors counts the total number of MCP tool errors.
+	MCPToolErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "opex",
+			Name:      "mcp_tool_errors_total",
+			Help:      "Total number of MCP tool errors.",
+		},
+		[]string{"tool", "error_type"},
+	)
 )
 
 // Handler returns the Prometheus metrics HTTP handler.
@@ -196,6 +227,8 @@ func normalizeEndpoint(path string) string {
 		return "/api/search/tag/{tagName}/values"
 	case len(path) > len("/api/v2/search/tag/") && path[:len("/api/v2/search/tag/")] == "/api/v2/search/tag/":
 		return "/api/v2/search/tag/{tagName}/values"
+	case path == "/api/mcp" || (len(path) > len("/api/mcp/") && path[:len("/api/mcp/")] == "/api/mcp/"):
+		return "/api/mcp"
 	default:
 		return path
 	}

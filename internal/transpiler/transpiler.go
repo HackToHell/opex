@@ -22,6 +22,12 @@ type TranspileOptions struct {
 	End   time.Time
 	Limit int
 
+	// NoLimit disables the LIMIT clause entirely. When true, the Limit
+	// field is ignored and no LIMIT is appended to the generated SQL.
+	// Use this for subqueries that feed into aggregations where an
+	// artificial cap would produce incorrect results.
+	NoLimit bool
+
 	// UsePrewhere uses PREWHERE instead of WHERE for time range filters.
 	// PREWHERE reads only indexed columns first, then applies the rest,
 	// which can significantly reduce I/O for large tables.
@@ -38,7 +44,7 @@ func Transpile(root *traceql.RootExpr, opts TranspileOptions) (*TranspileResult,
 	if opts.Table == "" {
 		opts.Table = "otel_traces"
 	}
-	if opts.Limit <= 0 {
+	if !opts.NoLimit && opts.Limit <= 0 {
 		opts.Limit = 20
 	}
 
@@ -57,6 +63,45 @@ func Transpile(root *traceql.RootExpr, opts TranspileOptions) (*TranspileResult,
 	}
 
 	return &TranspileResult{SQL: sql, Args: t.args}, nil
+}
+
+// TranspileFilterConditions extracts WHERE-clause SQL fragments from a pipeline
+// of SpansetFilter elements. Unlike Transpile(), it does not wrap the result in
+// a SELECT statement — it returns only the boolean condition(s) ANDed together.
+// This is used by metrics queries that need to embed span-level filter predicates
+// directly in their own WHERE clause.
+//
+// Returns an empty string if the pipeline has no filterable elements.
+func TranspileFilterConditions(pipeline *traceql.Pipeline, opts TranspileOptions) (string, error) {
+	if pipeline == nil || len(pipeline.Elements) == 0 {
+		return "", nil
+	}
+
+	t := &transpiler{opts: opts}
+
+	var conditions []string
+	for _, elem := range pipeline.Elements {
+		sf, ok := elem.(*traceql.SpansetFilter)
+		if !ok {
+			// Non-filter elements (aggregates, structural operators, etc.)
+			// are silently skipped — only SpansetFilter predicates can be
+			// converted to WHERE conditions.
+			continue
+		}
+		if sf.Expression == nil {
+			continue
+		}
+		cond, err := t.transpileFieldExpr(sf.Expression)
+		if err != nil {
+			return "", fmt.Errorf("transpiling filter condition: %w", err)
+		}
+		conditions = append(conditions, cond)
+	}
+
+	if len(conditions) == 0 {
+		return "", nil
+	}
+	return strings.Join(conditions, " AND "), nil
 }
 
 // applyHints reads query hints from the AST (e.g., with(sample=0.1))
@@ -127,8 +172,8 @@ func needsSpanRows(elem traceql.PipelineElement) bool {
 // transpilePipeline handles the full pipeline.
 func (t *transpiler) transpilePipeline(p *traceql.Pipeline) (string, error) {
 	if len(p.Elements) == 0 {
-		return fmt.Sprintf("SELECT DISTINCT TraceId FROM %s WHERE %s LIMIT %d",
-			t.opts.Table, t.mustTimeFilter(), t.opts.Limit), nil
+		return fmt.Sprintf("SELECT DISTINCT TraceId FROM %s WHERE %s%s",
+			t.opts.Table, t.mustTimeFilter(), t.limitClause()), nil
 	}
 
 	// Single element pipeline (most common case)
@@ -223,6 +268,14 @@ func (t *transpiler) mustTimeFilter() string {
 	return tf
 }
 
+// limitClause returns " LIMIT N" or "" if NoLimit is set.
+func (t *transpiler) limitClause() string {
+	if t.opts.NoLimit {
+		return ""
+	}
+	return fmt.Sprintf(" LIMIT %d", t.opts.Limit)
+}
+
 // transpileSpansetFilter generates SQL for a { expression } filter.
 // When spanLevel is true, the query returns all matching span rows (SELECT *)
 // instead of SELECT DISTINCT TraceId. This is needed when the next pipeline
@@ -252,14 +305,16 @@ func (t *transpiler) transpileSpansetFilter(f *traceql.SpansetFilter, prevCTE st
 	// Span-level CTEs use a large safety limit to prevent unbounded scans
 	// while preserving enough rows for correct aggregation.
 	selectClause := "SELECT DISTINCT TraceId"
-	limitClause := fmt.Sprintf(" LIMIT %d", t.opts.Limit)
+	lc := t.limitClause()
 	if spanLevel {
 		selectClause = "SELECT *"
-		safetyLimit := t.opts.Limit * 1000
-		if safetyLimit < 100000 {
-			safetyLimit = 100000
+		if !t.opts.NoLimit {
+			safetyLimit := t.opts.Limit * 1000
+			if safetyLimit < 100000 {
+				safetyLimit = 100000
+			}
+			lc = fmt.Sprintf(" LIMIT %d", safetyLimit)
 		}
-		limitClause = fmt.Sprintf(" LIMIT %d", safetyLimit)
 	}
 
 	// Build the query with optional PREWHERE
@@ -272,10 +327,10 @@ func (t *transpiler) transpileSpansetFilter(f *traceql.SpansetFilter, prevCTE st
 
 		if prevCTE != "" {
 			return fmt.Sprintf("%s FROM %s%s PREWHERE %s WHERE TraceId IN (SELECT TraceId FROM %s) AND %s%s",
-				selectClause, t.opts.Table, sampleClause, prewhere, prevCTE, where, limitClause), nil
+				selectClause, t.opts.Table, sampleClause, prewhere, prevCTE, where, lc), nil
 		}
 		return fmt.Sprintf("%s FROM %s%s PREWHERE %s WHERE %s%s",
-			selectClause, t.opts.Table, sampleClause, prewhere, where, limitClause), nil
+			selectClause, t.opts.Table, sampleClause, prewhere, where, lc), nil
 	}
 
 	// Standard path: combine all conditions into WHERE
@@ -289,11 +344,11 @@ func (t *transpiler) transpileSpansetFilter(f *traceql.SpansetFilter, prevCTE st
 
 	if prevCTE != "" {
 		return fmt.Sprintf("%s FROM %s%s WHERE TraceId IN (SELECT TraceId FROM %s) AND %s%s",
-			selectClause, t.opts.Table, sampleClause, prevCTE, where, limitClause), nil
+			selectClause, t.opts.Table, sampleClause, prevCTE, where, lc), nil
 	}
 
 	return fmt.Sprintf("%s FROM %s%s WHERE %s%s",
-		selectClause, t.opts.Table, sampleClause, where, limitClause), nil
+		selectClause, t.opts.Table, sampleClause, where, lc), nil
 }
 
 // transpileSpansetOperation generates SQL for && and || between spansets.
@@ -402,14 +457,14 @@ func (t *transpiler) transpileStructuralChild(op *traceql.SpansetOperation, prev
 	return fmt.Sprintf(
 		"SELECT DISTINCT p.TraceId FROM %s p "+
 			"JOIN %s c ON p.TraceId = c.TraceId AND p.SpanId = c.ParentSpanId "+
-			"WHERE %s AND %s AND %s AND %s%s LIMIT %d",
+			"WHERE %s AND %s AND %s AND %s%s%s",
 		t.opts.Table, t.opts.Table,
 		t.replaceColumnsWithAlias(lhsCond, "p"),
 		t.replaceColumnsWithAlias(rhsCond, "c"),
 		lhsTimeFilter,
 		rhsTimeFilter,
 		prevFilter,
-		t.opts.Limit,
+		t.limitClause(),
 	), nil
 }
 
@@ -437,14 +492,14 @@ func (t *transpiler) transpileStructuralParent(op *traceql.SpansetOperation, pre
 	return fmt.Sprintf(
 		"SELECT DISTINCT c.TraceId FROM %s c "+
 			"JOIN %s p ON c.TraceId = p.TraceId AND c.ParentSpanId = p.SpanId "+
-			"WHERE %s AND %s AND %s AND %s%s LIMIT %d",
+			"WHERE %s AND %s AND %s AND %s%s%s",
 		t.opts.Table, t.opts.Table,
 		t.replaceColumnsWithAlias(lhsCond, "c"),
 		t.replaceColumnsWithAlias(rhsCond, "p"),
 		lhsTimeFilter,
 		rhsTimeFilter,
 		prevFilter,
-		t.opts.Limit,
+		t.limitClause(),
 	), nil
 }
 
@@ -482,12 +537,12 @@ func (t *transpiler) transpileStructuralDescendant(op *traceql.SpansetOperation,
 			") "+
 			"SELECT DISTINCT d.TraceId FROM %s d "+
 			"JOIN ancestors a ON d.TraceId = a.TraceId AND d.ParentSpanId = a.SpanId "+
-			"WHERE %s AND %s%s LIMIT %d",
+			"WHERE %s AND %s%s%s",
 		t.opts.Table, lhsCond, tf, prevFilter,
 		t.opts.Table,
 		t.opts.Table,
 		rhsCond, tf, prevFilterAlias,
-		t.opts.Limit,
+		t.limitClause(),
 	), nil
 }
 
@@ -525,12 +580,12 @@ func (t *transpiler) transpileStructuralAncestor(op *traceql.SpansetOperation, p
 			") "+
 			"SELECT DISTINCT d.TraceId FROM descendants d "+
 			"JOIN %s t ON d.TraceId = t.TraceId AND d.ParentSpanId = t.SpanId "+
-			"WHERE %s AND %s%s LIMIT %d",
+			"WHERE %s AND %s%s%s",
 		t.opts.Table, lhsCond, tf, prevFilter,
 		t.opts.Table,
 		t.opts.Table,
 		rhsCond, tf, prevFilterAlias,
-		t.opts.Limit,
+		t.limitClause(),
 	), nil
 }
 
@@ -558,14 +613,14 @@ func (t *transpiler) transpileStructuralSibling(op *traceql.SpansetOperation, pr
 		"SELECT DISTINCT s1.TraceId FROM %s s1 "+
 			"JOIN %s s2 ON s1.TraceId = s2.TraceId "+
 			"AND s1.ParentSpanId = s2.ParentSpanId "+
-			"WHERE %s AND %s AND s1.ParentSpanId != '' AND s1.SpanId != s2.SpanId AND %s AND %s%s LIMIT %d",
+			"WHERE %s AND %s AND s1.ParentSpanId != '' AND s1.SpanId != s2.SpanId AND %s AND %s%s%s",
 		t.opts.Table, t.opts.Table,
 		t.replaceColumnsWithAlias(lhsCond, "s1"),
 		t.replaceColumnsWithAlias(rhsCond, "s2"),
 		lhsTimeFilter,
 		rhsTimeFilter,
 		prevFilter,
-		t.opts.Limit,
+		t.limitClause(),
 	), nil
 }
 
@@ -719,14 +774,14 @@ func (t *transpiler) transpileScalarFilter(f *traceql.ScalarFilter, prevCTE stri
 
 	if prevCTE != "" {
 		// The upstream CTE already contains span-level rows with proper filters.
-		return fmt.Sprintf("SELECT TraceId FROM %s GROUP BY TraceId HAVING %s %s %s LIMIT %d",
-			prevCTE, aggSQL, opSQL, rhsSQL, t.opts.Limit), nil
+		return fmt.Sprintf("SELECT TraceId FROM %s GROUP BY TraceId HAVING %s %s %s%s",
+			prevCTE, aggSQL, opSQL, rhsSQL, t.limitClause()), nil
 	}
 
 	// No previous CTE: query the raw table (single-stage pipeline)
 	where := t.mustTimeFilter()
-	return fmt.Sprintf("SELECT TraceId FROM %s WHERE %s GROUP BY TraceId HAVING %s %s %s LIMIT %d",
-		t.opts.Table, where, aggSQL, opSQL, rhsSQL, t.opts.Limit), nil
+	return fmt.Sprintf("SELECT TraceId FROM %s WHERE %s GROUP BY TraceId HAVING %s %s %s%s",
+		t.opts.Table, where, aggSQL, opSQL, rhsSQL, t.limitClause()), nil
 }
 
 // transpileAggregate generates SQL for a standalone aggregate in a pipeline.
@@ -735,13 +790,13 @@ func (t *transpiler) transpileAggregate(a *traceql.Aggregate, prevCTE string) (s
 	aggSQL := aggregateToSQL(a)
 
 	if prevCTE != "" {
-		return fmt.Sprintf("SELECT TraceId, %s AS agg_value FROM %s GROUP BY TraceId LIMIT %d",
-			aggSQL, prevCTE, t.opts.Limit), nil
+		return fmt.Sprintf("SELECT TraceId, %s AS agg_value FROM %s GROUP BY TraceId%s",
+			aggSQL, prevCTE, t.limitClause()), nil
 	}
 
 	where := t.mustTimeFilter()
-	return fmt.Sprintf("SELECT TraceId, %s AS agg_value FROM %s WHERE %s GROUP BY TraceId LIMIT %d",
-		aggSQL, t.opts.Table, where, t.opts.Limit), nil
+	return fmt.Sprintf("SELECT TraceId, %s AS agg_value FROM %s WHERE %s GROUP BY TraceId%s",
+		aggSQL, t.opts.Table, where, t.limitClause()), nil
 }
 
 // transpileScalarExpr converts a ScalarExpression to SQL.
@@ -863,13 +918,13 @@ func (t *transpiler) transpileMetricsAggregate(m *traceql.MetricsAggregate, prev
 
 	if prevCTE != "" {
 		// The upstream CTE already contains span-level rows with proper filters.
-		return fmt.Sprintf("SELECT %s FROM %s%s LIMIT %d",
-			strings.Join(selectParts, ", "), prevCTE, groupBy, t.opts.Limit), nil
+		return fmt.Sprintf("SELECT %s FROM %s%s%s",
+			strings.Join(selectParts, ", "), prevCTE, groupBy, t.limitClause()), nil
 	}
 
 	where := t.mustTimeFilter()
-	return fmt.Sprintf("SELECT %s FROM %s WHERE %s%s LIMIT %d",
-		strings.Join(selectParts, ", "), t.opts.Table, where, groupBy, t.opts.Limit), nil
+	return fmt.Sprintf("SELECT %s FROM %s WHERE %s%s%s",
+		strings.Join(selectParts, ", "), t.opts.Table, where, groupBy, t.limitClause()), nil
 }
 
 func sanitizeAlias(s string) string {
