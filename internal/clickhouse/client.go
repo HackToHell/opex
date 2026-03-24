@@ -13,6 +13,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/hacktohell/opex/internal/config"
 	"github.com/hacktohell/opex/internal/metrics"
+	"github.com/hacktohell/opex/internal/migrations"
 )
 
 // Client wraps a ClickHouse connection with resilience features including
@@ -41,6 +42,10 @@ func New(cfg config.ClickHouseConfig, logger *slog.Logger) (*Client, error) {
 
 	conn, err := c.dial()
 	if err != nil {
+		return nil, err
+	}
+	if err := c.runMigrations(); err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 
@@ -165,6 +170,11 @@ func (c *Client) Reconnect() error {
 		c.logger.Error("reconnection failed", "error", err)
 		return fmt.Errorf("reconnecting to ClickHouse: %w", err)
 	}
+	if err := c.runMigrations(); err != nil {
+		_ = conn.Close()
+		c.logger.Error("reconnection failed", "error", err)
+		return fmt.Errorf("reconnecting to ClickHouse: %w", err)
+	}
 
 	c.mu.Lock()
 	old := c.conn
@@ -182,6 +192,16 @@ func (c *Client) Reconnect() error {
 	metrics.SetCircuitBreakerState(float64(CircuitClosed))
 	c.logger.Info("reconnected to ClickHouse")
 
+	return nil
+}
+
+func (c *Client) runMigrations() error {
+	if !c.cfg.RunMigrations {
+		return nil
+	}
+	if err := migrations.Run(c.cfg, c.logger); err != nil {
+		return &MigrationError{Err: err}
+	}
 	return nil
 }
 

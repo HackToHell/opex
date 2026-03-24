@@ -92,6 +92,7 @@ listen_addr: ":8080"
 clickhouse:
   dsn: "clickhouse://localhost:9000/otel"
   traces_table: "otel_traces"
+  run_migrations: true          # Auto-apply embedded schema migrations on startup
   max_open_conns: 10
   max_idle_conns: 5
   conn_max_lifetime: 5m
@@ -124,6 +125,7 @@ logging:
 | `listen_addr` | HTTP server bind address | `:8080` |
 | `clickhouse.dsn` | ClickHouse connection string | `clickhouse://localhost:9000/default` |
 | `clickhouse.traces_table` | OTEL traces table name | `otel_traces` |
+| `clickhouse.run_migrations` | Render and apply embedded schema migrations on startup | `false` |
 | `clickhouse.use_materialized_views` | Use pre-computed tables for tag/metadata queries | `false` |
 | `query.timeout` | Per-query execution timeout | `30s` |
 | `query.max_concurrent` | Maximum number of concurrent queries | `20` |
@@ -235,7 +237,16 @@ Key columns:
 
 ### Materialized Views
 
-For better performance on tag discovery and search queries, create optional materialized views:
+For better performance on tag discovery and search queries, Opex can read from optional materialized view tables.
+
+If you enable startup migrations, Opex creates and backfills those tables automatically:
+
+```yaml
+clickhouse:
+  run_migrations: true
+```
+
+If you manage schema outside Opex, create the materialized views manually instead:
 
 ```bash
 make matviews

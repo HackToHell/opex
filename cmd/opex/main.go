@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -68,6 +69,11 @@ func main() {
 	var ch *clickhouse.Client
 	ch, err = clickhouse.New(cfg.ClickHouse, logger)
 	if err != nil {
+		var migrationErr *clickhouse.MigrationError
+		if errors.As(err, &migrationErr) {
+			logger.Error("database migration failed", "error", migrationErr)
+			os.Exit(1)
+		}
 		logger.Warn("failed to connect to ClickHouse, will retry in background", "error", err)
 		ch = clickhouse.NewLazy(cfg.ClickHouse, logger)
 	}

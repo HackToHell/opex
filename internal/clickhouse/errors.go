@@ -2,6 +2,7 @@ package clickhouse
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -15,6 +16,20 @@ var ErrNotConnected = errors.New("clickhouse: not connected")
 // ErrCircuitOpen is returned when the circuit breaker is open and rejecting
 // queries to protect a failing ClickHouse instance.
 var ErrCircuitOpen = errors.New("clickhouse: circuit breaker open")
+
+// MigrationError wraps a schema migration failure that occurs while bringing
+// up a ClickHouse connection.
+type MigrationError struct {
+	Err error
+}
+
+func (e *MigrationError) Error() string {
+	return fmt.Sprintf("clickhouse migrations: %v", e.Err)
+}
+
+func (e *MigrationError) Unwrap() error {
+	return e.Err
+}
 
 // isTransient returns true if the error represents a transient failure that
 // may succeed on retry (network issues, connection resets, timeouts).

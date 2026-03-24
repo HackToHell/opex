@@ -3,6 +3,7 @@ listen_addr: ":8080"
 clickhouse:
   dsn: "clickhouse://clickhouse:9000/otel"
   traces_table: "otel_traces"
+  run_migrations: true
   max_open_conns: 10
   max_idle_conns: 5
   conn_max_lifetime: 5m

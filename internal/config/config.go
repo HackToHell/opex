@@ -48,6 +48,8 @@ type ClickHouseConfig struct {
 	CircuitBreakerThreshold int `yaml:"circuit_breaker_threshold"`
 	// CircuitBreakerTimeout is the time to wait before transitioning from open to half-open.
 	CircuitBreakerTimeout time.Duration `yaml:"circuit_breaker_timeout"`
+	// RunMigrations controls whether database schema migrations are run on startup.
+	RunMigrations bool `yaml:"run_migrations"`
 }
 
 // QueryConfig holds query execution settings.
@@ -104,6 +106,7 @@ func DefaultConfig() *Config {
 			RetryBaseDelay:          50 * time.Millisecond,
 			CircuitBreakerThreshold: 5,
 			CircuitBreakerTimeout:   10 * time.Second,
+			RunMigrations:           false,
 		},
 		Query: QueryConfig{
 			MaxLimit:      100,
