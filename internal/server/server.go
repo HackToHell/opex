@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/hacktohell/opex/internal/config"
 	opexmcp "github.com/hacktohell/opex/internal/mcp"
 	"github.com/hacktohell/opex/internal/metrics"
+	"github.com/hacktohell/opex/internal/response"
 )
 
 // Server is the main Opex HTTP server.
@@ -43,43 +45,51 @@ func New(cfg *config.Config, ch *clickhouse.Client, logger *slog.Logger) *Server
 func (s *Server) registerRoutes() {
 	handlers := api.NewHandlers(s.logger)
 
-	// Infrastructure endpoints
+	// Infrastructure / health endpoints — no auth required.
 	s.router.HandleFunc("/api/echo", handlers.Echo).Methods(http.MethodGet)
 	s.router.HandleFunc("/api/status/buildinfo", handlers.BuildInfo).Methods(http.MethodGet)
 	s.router.HandleFunc("/ready", s.readyHandler).Methods(http.MethodGet)
 
-	// Trace, search, tag, and metrics endpoints are always registered.
-	// When ClickHouse is unavailable, queries return ErrNotConnected which
-	// the handlers surface as HTTP 503.
-	trace := api.NewTraceHandlers(s.ch, s.logger)
-	s.router.HandleFunc("/api/traces/{traceID}", trace.TraceByID).Methods(http.MethodGet)
-	s.router.HandleFunc("/api/v2/traces/{traceID}", trace.TraceByIDV2).Methods(http.MethodGet)
-
-	search := api.NewSearchHandlers(s.ch, s.cfg.Query, s.logger)
-	s.router.HandleFunc("/api/search", search.Search).Methods(http.MethodGet)
-
-	tags := api.NewTagHandlers(s.ch, s.logger)
-	s.router.HandleFunc("/api/search/tags", tags.SearchTags).Methods(http.MethodGet)
-	s.router.HandleFunc("/api/v2/search/tags", tags.SearchTagsV2).Methods(http.MethodGet)
-	s.router.HandleFunc("/api/search/tag/{tagName:.*}/values", tags.SearchTagValues).Methods(http.MethodGet)
-	s.router.HandleFunc("/api/v2/search/tag/{tagName:.*}/values", tags.SearchTagValuesV2).Methods(http.MethodGet)
-
-	metricsHandlers := api.NewMetricsHandlers(s.ch, s.cfg.Query, s.logger)
-	s.router.HandleFunc("/api/metrics/query_range", metricsHandlers.QueryRange).Methods(http.MethodGet)
-	s.router.HandleFunc("/api/metrics/query", metricsHandlers.QueryInstant).Methods(http.MethodGet)
-	s.router.HandleFunc("/api/metrics/summary", metricsHandlers.MetricsSummary).Methods(http.MethodGet)
-
-	// MCP server (if enabled)
+	// MCP server (if enabled) — no auth required.
 	if s.cfg.MCP.Enabled {
 		mcpServer := opexmcp.New(s.ch, s.cfg.Query, s.cfg.MCP, s.logger.With("component", "mcp"))
 		s.router.PathPrefix("/api/mcp/").Handler(http.StripPrefix("/api/mcp", mcpServer))
 		s.logger.Info("MCP server enabled", "path", "/api/mcp/")
 	}
 
-	// Prometheus metrics endpoint
+	// Prometheus metrics endpoint — no auth required.
 	s.router.Handle("/metrics", metrics.Handler()).Methods(http.MethodGet)
 
-	// Middleware: Prometheus metrics + request logging
+	// Authenticated sub-router — all remaining endpoints require a valid token
+	// when auth_token is configured.
+	authed := s.router.PathPrefix("/").Subrouter()
+	if s.cfg.AuthToken != "" {
+		authed.Use(s.authMiddleware)
+		s.logger.Info("token auth enabled")
+	}
+
+	// Trace, search, tag, and metrics endpoints are always registered.
+	// When ClickHouse is unavailable, queries return ErrNotConnected which
+	// the handlers surface as HTTP 503.
+	trace := api.NewTraceHandlers(s.ch, s.logger)
+	authed.HandleFunc("/api/traces/{traceID}", trace.TraceByID).Methods(http.MethodGet)
+	authed.HandleFunc("/api/v2/traces/{traceID}", trace.TraceByIDV2).Methods(http.MethodGet)
+
+	search := api.NewSearchHandlers(s.ch, s.cfg.Query, s.logger)
+	authed.HandleFunc("/api/search", search.Search).Methods(http.MethodGet)
+
+	tags := api.NewTagHandlers(s.ch, s.logger)
+	authed.HandleFunc("/api/search/tags", tags.SearchTags).Methods(http.MethodGet)
+	authed.HandleFunc("/api/v2/search/tags", tags.SearchTagsV2).Methods(http.MethodGet)
+	authed.HandleFunc("/api/search/tag/{tagName:.*}/values", tags.SearchTagValues).Methods(http.MethodGet)
+	authed.HandleFunc("/api/v2/search/tag/{tagName:.*}/values", tags.SearchTagValuesV2).Methods(http.MethodGet)
+
+	metricsHandlers := api.NewMetricsHandlers(s.ch, s.cfg.Query, s.logger)
+	authed.HandleFunc("/api/metrics/query_range", metricsHandlers.QueryRange).Methods(http.MethodGet)
+	authed.HandleFunc("/api/metrics/query", metricsHandlers.QueryInstant).Methods(http.MethodGet)
+	authed.HandleFunc("/api/metrics/summary", metricsHandlers.MetricsSummary).Methods(http.MethodGet)
+
+	// Middleware: Prometheus metrics + request logging (applied to all routes)
 	s.router.Use(metrics.Middleware)
 	s.router.Use(s.loggingMiddleware)
 }
@@ -119,6 +129,33 @@ func (lrw *loggingResponseWriter) Write(b []byte) (int, error) {
 	n, err := lrw.ResponseWriter.Write(b)
 	lrw.written += int64(n)
 	return n, err
+}
+
+// authMiddleware rejects requests that do not carry a valid Bearer token.
+// It compares the token from the Authorization header against the configured
+// auth_token using constant-time comparison.
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			response.WriteError(w, http.StatusUnauthorized, "missing authorization header")
+			return
+		}
+
+		const prefix = "Bearer "
+		if len(auth) < len(prefix) || auth[:len(prefix)] != prefix {
+			response.WriteError(w, http.StatusUnauthorized, "invalid authorization header")
+			return
+		}
+
+		token := auth[len(prefix):]
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.AuthToken)) != 1 {
+			response.WriteError(w, http.StatusUnauthorized, "invalid auth token")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {

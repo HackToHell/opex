@@ -12,6 +12,7 @@ import (
 // Config holds the application configuration.
 type Config struct {
 	ListenAddr string           `yaml:"listen_addr"`
+	AuthToken  string           `yaml:"auth_token"`
 	ClickHouse ClickHouseConfig `yaml:"clickhouse"`
 	Query      QueryConfig      `yaml:"query"`
 	Logging    LoggingConfig    `yaml:"logging"`
