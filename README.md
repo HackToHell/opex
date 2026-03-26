@@ -98,7 +98,7 @@ clickhouse:
   conn_max_lifetime: 5m
   dial_timeout: 5s
   read_timeout: 30s
-  use_materialized_views: false       # Enable after running `make matviews`
+  use_materialized_views: true        # Disable to fall back to raw span scans
   health_check_interval: 5s
   max_retries: 2
   retry_base_delay: 50ms
@@ -126,7 +126,7 @@ logging:
 | `clickhouse.dsn` | ClickHouse connection string | `clickhouse://localhost:9000/default` |
 | `clickhouse.traces_table` | OTEL traces table name | `otel_traces` |
 | `clickhouse.run_migrations` | Render and apply embedded schema migrations on startup | `false` |
-| `clickhouse.use_materialized_views` | Use pre-computed tables for tag/metadata queries | `false` |
+| `clickhouse.use_materialized_views` | Use pre-computed tables for search, tag, and service name queries | `true` |
 | `query.timeout` | Per-query execution timeout | `30s` |
 | `query.max_concurrent` | Maximum number of concurrent queries | `20` |
 | `query.max_limit` | Maximum number of traces returned per search | `100` |
@@ -237,7 +237,7 @@ Key columns:
 
 ### Materialized Views
 
-For better performance on tag discovery and search queries, Opex can read from optional materialized view tables.
+For better performance on search and tag discovery queries, Opex can read from optional materialized view tables. When enabled, search results are enriched from a pre-aggregated trace metadata table instead of re-scanning raw spans, and tag/service name discovery uses 5-minute bucketed presence indexes. Bounded discovery windows are snapped outward to the nearest 5-minute boundaries, which means results may include tags or services that appeared up to 5 minutes outside the exact requested window. This trade-off is intentional for fast UI discovery on long-running traces (up to 14 days).
 
 If you enable startup migrations, Opex creates and backfills those tables automatically:
 

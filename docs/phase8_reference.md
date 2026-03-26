@@ -122,15 +122,29 @@ clickhouse:
 
 ### How It Works
 
-When `use_materialized_views: true`, the tag discovery endpoints (`/api/search/tags`, `/api/v2/search/tags`, `/api/search/tag/{tagName}/values`) query the pre-computed tables instead of scanning `otel_traces` with `arrayJoin(mapKeys(...))`. This is significantly faster for large tables.
+When `use_materialized_views: true`:
+
+- **Search** (`/api/search`): Trace metadata (root service/name, start time, wall-clock duration, span count, error count) is read from `otel_trace_metadata` instead of fetching and re-aggregating all raw spans. Service stats come from a lightweight `GROUP BY (TraceId, ServiceName)` query on the raw table. Raw span rows are only fetched when `spss > 0` for SpanSet construction. This dramatically reduces I/O for search result enrichment.
+- **Tag discovery** (`/api/search/tags`, `/api/v2/search/tags`): Tag name lists come from 5-minute bucketed `otel_span_tag_names` / `otel_resource_tag_names` tables. The requested time window is snapped outward to the nearest 5-minute boundaries before querying, so results may include tags that appeared up to ~5 minutes outside the exact window. This is intentional for fast UI discovery on long-running traces.
+- **Service name values** (`/api/search/tag/service.name/values`): Service names come from the bucketed `otel_service_names` table with the same snapped-window semantics.
+- **Other tag values**: Arbitrary attribute values (e.g., `/api/search/tag/http.method/values`) still query the raw `otel_traces` table since there is no value-cache materialized table.
+
+### Trace Metadata Schema
+
+The `otel_trace_metadata` table stores `MaxEndNano` (the latest nanosecond epoch at which any span in the trace ended) rather than a single-span max duration. Wall-clock trace duration is computed as `MaxEndNano - StartTime.UnixNano()`, matching the search API's existing semantics.
+
+### Tag/Service Bucketed Schema
+
+The tag name and service name tables use a 5-minute bucketed design. Each row represents the presence of a key within a specific 5-minute interval (`BucketStart`). This replaces the earlier `FirstSeen`/`LastSeen` lifetime design, which produced false positives for long-running ML pipeline traces where a tag or service could appear at the start and end of a multi-day trace with gaps in between. The bucketed schema eliminates those false positives while keeping discovery queries fast by avoiding raw span scans entirely.
 
 ### Files Modified
 
-- `deploy/clickhouse/materialized_views.sql` — New DDL file
+- `deploy/clickhouse/materialized_views.sql` — DDL for all 4 materialized tables
 - `internal/config/config.go` — Added `UseMatViews`, `TraceMetadataTable`, `SpanTagNamesTable`, `ResourceTagNamesTable`, `ServiceNamesTable` fields
-- `internal/clickhouse/trace.go` — Added `UseMatViews()`, `TraceMetadataTable()`, `SpanTagNamesTable()`, `ResourceTagNamesTable()`, `ServiceNamesTable()`, `QueryTagNamesFromView()`, `QueryServiceNamesFromView()`
-- `internal/api/tags.go` — Updated `queryMapKeys()` and `queryDistinctColumn()` to use materialized views when enabled
-- `Makefile` — Added `matviews` target
+- `internal/clickhouse/trace.go` — Added `QueryTraceMetadataByTraceIDs()`, `QueryServiceStatsByTraceIDs()`, bucketed `QueryTagNamesFromBuckets()`, bucketed `QueryServiceNamesFromBuckets()`
+- `internal/tracequery/search.go` — Hybrid search path using trace metadata MV when enabled
+- `internal/tracequery/tags.go` — Bucket-snapped MV reads for tag/service discovery with `snapTo5m()` helper
+- `Makefile` — `matviews` target
 
 ### Running
 
@@ -355,7 +369,7 @@ clickhouse:
   dial_timeout: 5s
   read_timeout: 30s
   # Materialized views (Phase 8)
-  use_materialized_views: false
+  use_materialized_views: true
   trace_metadata_table: "otel_trace_metadata"
   span_tag_names_table: "otel_span_tag_names"
   resource_tag_names_table: "otel_resource_tag_names"

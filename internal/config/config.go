@@ -96,7 +96,7 @@ func DefaultConfig() *Config {
 			ConnMaxLifetime:         5 * time.Minute,
 			DialTimeout:             5 * time.Second,
 			ReadTimeout:             30 * time.Second,
-			UseMatViews:             false,
+			UseMatViews:             true,
 			TraceMetadataTable:      "otel_trace_metadata",
 			SpanTagNamesTable:       "otel_span_tag_names",
 			ResourceTagNamesTable:   "otel_resource_tag_names",
