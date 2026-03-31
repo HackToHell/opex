@@ -46,17 +46,20 @@ func IsInputError(err error) bool {
 
 // SearchTraces parses a TraceQL query, transpiles it to SQL, executes against
 // ClickHouse, and returns a Tempo-compatible search response.
+//
+// When materialized views are enabled, metadata (root service/name, duration,
+// error count) is read from the pre-aggregated trace metadata table and
+// service stats come from a lightweight GROUP BY query, avoiding a full span
+// fetch. Raw spans are only retrieved when spss > 0 (for SpanSets).
 func SearchTraces(ctx context.Context, ch *clickhouse.Client, cfg config.QueryConfig,
 	query string, start, end time.Time, limit, spss int,
 	minDuration, maxDuration time.Duration,
 ) (*response.SearchResponse, error) {
-	// Parse TraceQL
 	root, err := traceql.Parse(query)
 	if err != nil {
 		return nil, newInputError(fmt.Errorf("invalid TraceQL query: %w", err))
 	}
 
-	// Transpile to SQL
 	opts := transpiler.TranspileOptions{
 		Table: ch.Table(),
 		Start: start,
@@ -68,7 +71,6 @@ func SearchTraces(ctx context.Context, ch *clickhouse.Client, cfg config.QueryCo
 		return nil, newInputError(fmt.Errorf("transpile error: %w", err))
 	}
 
-	// Execute query to get matching TraceIds
 	traceIDs, err := ch.QueryTraceIDs(ctx, result.SQL)
 	if err != nil {
 		return nil, fmt.Errorf("search query failed: %w", err)
@@ -81,15 +83,143 @@ func SearchTraces(ctx context.Context, ch *clickhouse.Client, cfg config.QueryCo
 		}, nil
 	}
 
-	// Fetch spans for the matched trace IDs
+	if ch.UseMatViews() {
+		return searchWithMatViews(ctx, ch, traceIDs, spss, minDuration, maxDuration)
+	}
+
 	spans, err := ch.QuerySpansByTraceIDs(ctx, traceIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch trace details: %w", err)
 	}
 
-	// Build search response
 	resp := buildSearchResponse(spans, traceIDs, spss, minDuration, maxDuration)
 	return resp, nil
+}
+
+// searchWithMatViews builds the search response using the trace metadata
+// materialized table for core fields and a lightweight GROUP BY for
+// service stats. Raw spans are fetched only when spss > 0.
+func searchWithMatViews(ctx context.Context, ch *clickhouse.Client,
+	traceIDs []string, spss int, minDur, maxDur time.Duration,
+) (*response.SearchResponse, error) {
+	metaRows, err := ch.QueryTraceMetadataByTraceIDs(ctx, traceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("trace metadata query failed: %w", err)
+	}
+
+	svcRows, err := ch.QueryServiceStatsByTraceIDs(ctx, traceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("service stats query failed: %w", err)
+	}
+
+	// Index service stats by TraceId.
+	type perTraceSvc = map[string]response.ServiceStats
+	svcByTrace := make(map[string]perTraceSvc, len(traceIDs))
+	for _, s := range svcRows {
+		m, ok := svcByTrace[s.TraceID]
+		if !ok {
+			m = make(perTraceSvc)
+			svcByTrace[s.TraceID] = m
+		}
+		m[s.ServiceName] = response.ServiceStats{
+			SpanCount:  int(s.SpanCount),
+			ErrorCount: int(s.ErrorCount),
+		}
+	}
+
+	// Optionally fetch spans for SpanSets.
+	var spansByTrace map[string][]clickhouse.SpanRow
+	if spss > 0 {
+		spans, err := ch.QuerySpansByTraceIDs(ctx, traceIDs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch spans for spansets: %w", err)
+		}
+		spansByTrace = make(map[string][]clickhouse.SpanRow, len(traceIDs))
+		for _, s := range spans {
+			spansByTrace[s.TraceID] = append(spansByTrace[s.TraceID], s)
+		}
+	}
+
+	// Index metadata by TraceId so we can iterate traceIDs in the order
+	// returned by the upstream TraceQL query, matching the non-MV path.
+	metaByTrace := make(map[string]*clickhouse.TraceMetadataRow, len(metaRows))
+	var totalSpans uint64
+	for i := range metaRows {
+		metaByTrace[metaRows[i].TraceID] = &metaRows[i]
+		totalSpans += metaRows[i].SpanCount
+	}
+
+	var traces []response.TraceSearchMetadata
+	for _, tid := range traceIDs {
+		m, ok := metaByTrace[tid]
+		if !ok {
+			continue
+		}
+
+		startNano := m.StartTime.UnixNano()
+		durationMs := int((m.MaxEndNano - startNano) / 1_000_000)
+		if durationMs < 0 {
+			durationMs = 0
+		}
+
+		if minDur > 0 && time.Duration(durationMs)*time.Millisecond < minDur {
+			continue
+		}
+		if maxDur > 0 && time.Duration(durationMs)*time.Millisecond > maxDur {
+			continue
+		}
+
+		meta := response.TraceSearchMetadata{
+			TraceID:           m.TraceID,
+			RootServiceName:   m.RootServiceName,
+			RootTraceName:     m.RootSpanName,
+			StartTimeUnixNano: fmt.Sprintf("%d", startNano),
+			DurationMs:        durationMs,
+		}
+
+		if ss := svcByTrace[m.TraceID]; len(ss) > 0 {
+			meta.ServiceStats = ss
+		}
+
+		if spss > 0 {
+			if rows := spansByTrace[m.TraceID]; len(rows) > 0 {
+				meta.SpanSets = buildSpanSets(rows, spss)
+			}
+		}
+
+		traces = append(traces, meta)
+	}
+
+	if traces == nil {
+		traces = []response.TraceSearchMetadata{}
+	}
+
+	return &response.SearchResponse{
+		Traces: traces,
+		Metrics: response.SearchMetrics{
+			InspectedTraces: uint32(len(traceIDs)),
+			InspectedSpans:  totalSpans,
+		},
+	}, nil
+}
+
+// buildSpanSets constructs SpanSets from raw span rows, limited to spss spans.
+func buildSpanSets(spans []clickhouse.SpanRow, spss int) []response.SpanSet {
+	limit := spss
+	if limit > len(spans) {
+		limit = len(spans)
+	}
+	var setSpans []response.SpanSetSpan
+	for i := 0; i < limit; i++ {
+		s := spans[i]
+		setSpans = append(setSpans, response.SpanSetSpan{
+			SpanID:            s.SpanID,
+			Name:              s.SpanName,
+			StartTimeUnixNano: fmt.Sprintf("%d", s.Timestamp.UnixNano()),
+			DurationNanos:     fmt.Sprintf("%d", s.Duration),
+		})
+	}
+	return []response.SpanSet{{Spans: setSpans, Matched: len(spans)}}
 }
 
 // BuildSearchResponseFromSpans builds a SearchResponse from pre-fetched spans.

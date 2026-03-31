@@ -20,8 +20,7 @@ CREATE TABLE IF NOT EXISTS otel.otel_trace_metadata
     `RootServiceName` AggregateFunction(argMin, LowCardinality(String), DateTime64(9)),
     `RootSpanName` AggregateFunction(argMin, LowCardinality(String), DateTime64(9)),
     `StartTime` SimpleAggregateFunction(min, DateTime64(9)),
-    `EndTime` SimpleAggregateFunction(max, DateTime64(9)),
-    `Duration` AggregateFunction(max, UInt64),
+    `MaxEndNano` SimpleAggregateFunction(max, Int64),
     `SpanCount` SimpleAggregateFunction(sum, UInt64),
     `ErrorCount` SimpleAggregateFunction(sum, UInt64)
 )
@@ -37,8 +36,7 @@ AS SELECT
     argMinState(ServiceName, if(ParentSpanId = '', Timestamp, toDateTime64('2099-01-01 00:00:00.000000000', 9))) AS RootServiceName,
     argMinState(SpanName, if(ParentSpanId = '', Timestamp, toDateTime64('2099-01-01 00:00:00.000000000', 9))) AS RootSpanName,
     min(Timestamp) AS StartTime,
-    max(Timestamp) AS EndTime,
-    maxState(Duration) AS Duration,
+    max(toInt64(toUnixTimestamp64Nano(Timestamp)) + toInt64(Duration)) AS MaxEndNano,
     toUInt64(count()) AS SpanCount,
     toUInt64(countIf(StatusCode = 'STATUS_CODE_ERROR')) AS ErrorCount
 FROM otel.otel_traces
@@ -53,22 +51,23 @@ GROUP BY TraceId;
 
 CREATE TABLE IF NOT EXISTS otel.otel_span_tag_names
 (
+    `BucketStart` DateTime64(9),
     `TagName` LowCardinality(String),
-    `Count` SimpleAggregateFunction(sum, UInt64),
-    `LastSeen` SimpleAggregateFunction(max, DateTime64(9))
+    `Count` SimpleAggregateFunction(sum, UInt64)
 )
 ENGINE = AggregatingMergeTree()
-ORDER BY (TagName)
+PARTITION BY toDate(BucketStart)
+ORDER BY (BucketStart, TagName)
 SETTINGS index_granularity = 8192;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS otel.otel_span_tag_names_mv
 TO otel.otel_span_tag_names
 AS SELECT
+    toStartOfInterval(Timestamp, INTERVAL 5 MINUTE) AS BucketStart,
     arrayJoin(mapKeys(SpanAttributes)) AS TagName,
-    toUInt64(count()) AS Count,
-    max(Timestamp) AS LastSeen
+    toUInt64(count()) AS Count
 FROM otel.otel_traces
-GROUP BY TagName;
+GROUP BY BucketStart, TagName;
 
 
 -- ============================================================================
@@ -78,22 +77,23 @@ GROUP BY TagName;
 
 CREATE TABLE IF NOT EXISTS otel.otel_resource_tag_names
 (
+    `BucketStart` DateTime64(9),
     `TagName` LowCardinality(String),
-    `Count` SimpleAggregateFunction(sum, UInt64),
-    `LastSeen` SimpleAggregateFunction(max, DateTime64(9))
+    `Count` SimpleAggregateFunction(sum, UInt64)
 )
 ENGINE = AggregatingMergeTree()
-ORDER BY (TagName)
+PARTITION BY toDate(BucketStart)
+ORDER BY (BucketStart, TagName)
 SETTINGS index_granularity = 8192;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS otel.otel_resource_tag_names_mv
 TO otel.otel_resource_tag_names
 AS SELECT
+    toStartOfInterval(Timestamp, INTERVAL 5 MINUTE) AS BucketStart,
     arrayJoin(mapKeys(ResourceAttributes)) AS TagName,
-    toUInt64(count()) AS Count,
-    max(Timestamp) AS LastSeen
+    toUInt64(count()) AS Count
 FROM otel.otel_traces
-GROUP BY TagName;
+GROUP BY BucketStart, TagName;
 
 
 -- ============================================================================
@@ -103,22 +103,23 @@ GROUP BY TagName;
 
 CREATE TABLE IF NOT EXISTS otel.otel_service_names
 (
+    `BucketStart` DateTime64(9),
     `ServiceName` LowCardinality(String),
-    `SpanCount` SimpleAggregateFunction(sum, UInt64),
-    `LastSeen` SimpleAggregateFunction(max, DateTime64(9))
+    `SpanCount` SimpleAggregateFunction(sum, UInt64)
 )
 ENGINE = AggregatingMergeTree()
-ORDER BY (ServiceName)
+PARTITION BY toDate(BucketStart)
+ORDER BY (BucketStart, ServiceName)
 SETTINGS index_granularity = 8192;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS otel.otel_service_names_mv
 TO otel.otel_service_names
 AS SELECT
+    toStartOfInterval(Timestamp, INTERVAL 5 MINUTE) AS BucketStart,
     ServiceName,
-    toUInt64(count()) AS SpanCount,
-    max(Timestamp) AS LastSeen
+    toUInt64(count()) AS SpanCount
 FROM otel.otel_traces
-GROUP BY ServiceName;
+GROUP BY BucketStart, ServiceName;
 
 
 -- ============================================================================
@@ -134,21 +135,20 @@ GROUP BY ServiceName;
 --       argMinState(ServiceName, if(ParentSpanId = '', Timestamp, toDateTime64('2099-01-01 00:00:00.000000000', 9))),
 --       argMinState(SpanName, if(ParentSpanId = '', Timestamp, toDateTime64('2099-01-01 00:00:00.000000000', 9))),
 --       min(Timestamp),
---       max(Timestamp),
---       maxState(Duration),
+--       max(toInt64(toUnixTimestamp64Nano(Timestamp)) + toInt64(Duration)),
 --       toUInt64(count()),
 --       toUInt64(countIf(StatusCode = 'STATUS_CODE_ERROR'))
 --   FROM otel.otel_traces
 --   GROUP BY TraceId;
 --
 --   INSERT INTO otel.otel_span_tag_names
---   SELECT arrayJoin(mapKeys(SpanAttributes)), toUInt64(count()), max(Timestamp)
---   FROM otel.otel_traces GROUP BY 1;
+--   SELECT toStartOfInterval(Timestamp, INTERVAL 5 MINUTE), arrayJoin(mapKeys(SpanAttributes)), toUInt64(count())
+--   FROM otel.otel_traces GROUP BY 1, 2;
 --
 --   INSERT INTO otel.otel_resource_tag_names
---   SELECT arrayJoin(mapKeys(ResourceAttributes)), toUInt64(count()), max(Timestamp)
---   FROM otel.otel_traces GROUP BY 1;
+--   SELECT toStartOfInterval(Timestamp, INTERVAL 5 MINUTE), arrayJoin(mapKeys(ResourceAttributes)), toUInt64(count())
+--   FROM otel.otel_traces GROUP BY 1, 2;
 --
 --   INSERT INTO otel.otel_service_names
---   SELECT ServiceName, toUInt64(count()), max(Timestamp)
---   FROM otel.otel_traces GROUP BY ServiceName;
+--   SELECT toStartOfInterval(Timestamp, INTERVAL 5 MINUTE), ServiceName, toUInt64(count())
+--   FROM otel.otel_traces GROUP BY 1, ServiceName;

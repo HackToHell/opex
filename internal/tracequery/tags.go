@@ -115,6 +115,31 @@ func GetTagValues(ctx context.Context, ch *clickhouse.Client,
 }
 
 // ---------------------------------------------------------------------------
+// Bucket snapping
+// ---------------------------------------------------------------------------
+
+const bucketInterval = 5 * time.Minute
+
+// snapTo5m rounds a request window outward to 5-minute boundaries for
+// bucketed MV queries. start is floored, end is ceiled. The returned
+// snappedEnd is exclusive (suitable for BucketStart < snappedEnd).
+func snapTo5m(start, end time.Time) (snappedStart, snappedEnd time.Time) {
+	startNano := start.UnixNano()
+	endNano := end.UnixNano()
+	intervalNano := int64(bucketInterval)
+
+	snappedStart = time.Unix(0, startNano-startNano%intervalNano).UTC()
+
+	rem := endNano % intervalNano
+	if rem == 0 {
+		snappedEnd = end.UTC()
+	} else {
+		snappedEnd = time.Unix(0, endNano+(intervalNano-rem)).UTC()
+	}
+	return snappedStart, snappedEnd
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -128,7 +153,8 @@ func queryMapKeys(ctx context.Context, ch *clickhouse.Client, mapCol string, sta
 			table = ch.ResourceTagNamesTable()
 		}
 		if table != "" {
-			return ch.QueryTagNamesFromView(ctx, table)
+			snappedStart, snappedEnd := snapTo5m(start, end)
+			return ch.QueryTagNamesFromBuckets(ctx, table, snappedStart, snappedEnd)
 		}
 	}
 
@@ -219,7 +245,8 @@ func queryTagValues(ctx context.Context, ch *clickhouse.Client, tagName string, 
 
 func queryDistinctColumn(ctx context.Context, ch *clickhouse.Client, col string, start, end time.Time) ([]string, error) {
 	if col == "ServiceName" && ch.UseMatViews() {
-		return ch.QueryServiceNamesFromView(ctx)
+		snappedStart, snappedEnd := snapTo5m(start, end)
+		return ch.QueryServiceNamesFromBuckets(ctx, snappedStart, snappedEnd)
 	}
 
 	sql := fmt.Sprintf(

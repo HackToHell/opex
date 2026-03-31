@@ -1488,6 +1488,84 @@ func TestMatViews(t *testing.T) {
 		if len(resp.Traces) != 7 {
 			t.Errorf("trace count = %d, want 7", len(resp.Traces))
 		}
+
+		for _, tr := range resp.Traces {
+			if tr.RootServiceName == "" {
+				t.Errorf("rootServiceName empty for trace %s (mat-view path)", tr.TraceID)
+			}
+			if tr.DurationMs <= 0 {
+				t.Errorf("durationMs = %d for trace %s, want > 0 (mat-view path)", tr.DurationMs, tr.TraceID)
+			}
+			if tr.ServiceStats == nil {
+				t.Errorf("serviceStats nil for trace %s (mat-view path)", tr.TraceID)
+			}
+		}
+	})
+
+	t.Run("SearchMinDuration", func(t *testing.T) {
+		params := url.Values{}
+		params.Set("q", "{}")
+		params.Set("start", seedStart)
+		params.Set("end", seedEnd)
+		params.Set("minDuration", "1s")
+		var resp searchResponse
+		status := httpGetJSONURL(t, fmt.Sprintf("%s/api/search?%s", mvBaseURL, params.Encode()), &resp)
+		assertStatus(t, status, http.StatusOK)
+
+		for _, tr := range resp.Traces {
+			if tr.DurationMs < 1000 {
+				t.Errorf("trace %s has duration %dms, want >= 1000ms (mat-view path)", tr.TraceID, tr.DurationMs)
+			}
+		}
+	})
+
+	t.Run("SparseGapWindow_NoFalsePositives", func(t *testing.T) {
+		// 11:20-11:25 UTC has no spans (ffff ends at 11:15, cccc starts at 11:30).
+		// With old lifetime schema, user-service would falsely appear
+		// because its FirstSeen (10:00) and LastSeen (11:50) overlap.
+		// With bucketed schema, only buckets with real data are populated
+		// so this window must return no service names.
+		gapStart := "1736940000" // 2025-01-15T11:20:00Z
+		gapEnd := "1736940300"   // 2025-01-15T11:25:00Z
+		var resp tagValuesResponse
+		status := httpGetJSONURL(t, fmt.Sprintf(
+			"%s/api/search/tag/service.name/values?start=%s&end=%s",
+			mvBaseURL, gapStart, gapEnd,
+		), &resp)
+		assertStatus(t, status, http.StatusOK)
+		if len(resp.TagValues) != 0 {
+			t.Errorf("expected no services in gap window, got %v", resp.TagValues)
+		}
+	})
+
+	t.Run("SparseGapWindow_NoFalsePositiveTags", func(t *testing.T) {
+		// Same gap window for span tag names.
+		gapStart := "1736940000"
+		gapEnd := "1736940300"
+		var resp tagsResponse
+		status := httpGetJSONURL(t, fmt.Sprintf(
+			"%s/api/search/tags?scope=span&start=%s&end=%s",
+			mvBaseURL, gapStart, gapEnd,
+		), &resp)
+		assertStatus(t, status, http.StatusOK)
+		if len(resp.TagNames) != 0 {
+			t.Errorf("expected no span tags in gap window, got %d tags", len(resp.TagNames))
+		}
+	})
+
+	t.Run("SnappedWindowInclusion", func(t *testing.T) {
+		// 11:29-11:31 snaps outward to [11:25, 11:35). Trace cccc at
+		// 11:30 has frontend + api-gateway. Those must appear.
+		narrowStart := "1736940540" // 2025-01-15T11:29:00Z
+		narrowEnd := "1736940660"   // 2025-01-15T11:31:00Z
+		var resp tagValuesResponse
+		status := httpGetJSONURL(t, fmt.Sprintf(
+			"%s/api/search/tag/service.name/values?start=%s&end=%s",
+			mvBaseURL, narrowStart, narrowEnd,
+		), &resp)
+		assertStatus(t, status, http.StatusOK)
+		assertContains(t, resp.TagValues, "frontend")
+		assertContains(t, resp.TagValues, "api-gateway")
 	})
 }
 

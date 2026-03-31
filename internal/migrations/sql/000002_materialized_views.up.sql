@@ -4,8 +4,7 @@ CREATE TABLE IF NOT EXISTS {{ .TraceMetadataTable }}
     `RootServiceName` AggregateFunction(argMin, LowCardinality(String), DateTime64(9)),
     `RootSpanName` AggregateFunction(argMin, LowCardinality(String), DateTime64(9)),
     `StartTime` SimpleAggregateFunction(min, DateTime64(9)),
-    `EndTime` SimpleAggregateFunction(max, DateTime64(9)),
-    `Duration` AggregateFunction(max, UInt64),
+    `MaxEndNano` SimpleAggregateFunction(max, Int64),
     `SpanCount` SimpleAggregateFunction(sum, UInt64),
     `ErrorCount` SimpleAggregateFunction(sum, UInt64)
 )
@@ -21,8 +20,7 @@ AS SELECT
     argMinState(ServiceName, if(ParentSpanId = '', Timestamp, toDateTime64('2099-01-01 00:00:00.000000000', 9))) AS RootServiceName,
     argMinState(SpanName, if(ParentSpanId = '', Timestamp, toDateTime64('2099-01-01 00:00:00.000000000', 9))) AS RootSpanName,
     min(Timestamp) AS StartTime,
-    max(Timestamp) AS EndTime,
-    maxState(Duration) AS Duration,
+    max(toInt64(toUnixTimestamp64Nano(Timestamp)) + toInt64(Duration)) AS MaxEndNano,
     toUInt64(count()) AS SpanCount,
     toUInt64(countIf(StatusCode = 'STATUS_CODE_ERROR')) AS ErrorCount
 FROM {{ .TracesTable }}
@@ -34,8 +32,7 @@ SELECT
     argMinState(ServiceName, if(ParentSpanId = '', Timestamp, toDateTime64('2099-01-01 00:00:00.000000000', 9))) AS RootServiceName,
     argMinState(SpanName, if(ParentSpanId = '', Timestamp, toDateTime64('2099-01-01 00:00:00.000000000', 9))) AS RootSpanName,
     min(Timestamp) AS StartTime,
-    max(Timestamp) AS EndTime,
-    maxState(Duration) AS Duration,
+    max(toInt64(toUnixTimestamp64Nano(Timestamp)) + toInt64(Duration)) AS MaxEndNano,
     toUInt64(count()) AS SpanCount,
     toUInt64(countIf(StatusCode = 'STATUS_CODE_ERROR')) AS ErrorCount
 FROM {{ .TracesTable }}
@@ -44,84 +41,87 @@ GROUP BY TraceId;
 
 CREATE TABLE IF NOT EXISTS {{ .SpanTagNamesTable }}
 (
+    `BucketStart` DateTime64(9),
     `TagName` LowCardinality(String),
-    `Count` SimpleAggregateFunction(sum, UInt64),
-    `LastSeen` SimpleAggregateFunction(max, DateTime64(9))
+    `Count` SimpleAggregateFunction(sum, UInt64)
 )
 ENGINE = AggregatingMergeTree()
-ORDER BY (TagName)
+PARTITION BY toDate(BucketStart)
+ORDER BY (BucketStart, TagName)
 SETTINGS index_granularity = 8192;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS {{ .SpanTagNamesView }}
 TO {{ .SpanTagNamesTable }}
 AS SELECT
+    toStartOfInterval(Timestamp, INTERVAL 5 MINUTE) AS BucketStart,
     arrayJoin(mapKeys(SpanAttributes)) AS TagName,
-    toUInt64(count()) AS Count,
-    max(Timestamp) AS LastSeen
+    toUInt64(count()) AS Count
 FROM {{ .TracesTable }}
-GROUP BY TagName;
+GROUP BY BucketStart, TagName;
 
 INSERT INTO {{ .SpanTagNamesTable }}
 SELECT
+    toStartOfInterval(Timestamp, INTERVAL 5 MINUTE) AS BucketStart,
     arrayJoin(mapKeys(SpanAttributes)) AS TagName,
-    toUInt64(count()) AS Count,
-    max(Timestamp) AS LastSeen
+    toUInt64(count()) AS Count
 FROM {{ .TracesTable }}
 WHERE NOT EXISTS (SELECT 1 FROM {{ .SpanTagNamesTable }} LIMIT 1)
-GROUP BY TagName;
+GROUP BY BucketStart, TagName;
 
 CREATE TABLE IF NOT EXISTS {{ .ResourceTagNamesTable }}
 (
+    `BucketStart` DateTime64(9),
     `TagName` LowCardinality(String),
-    `Count` SimpleAggregateFunction(sum, UInt64),
-    `LastSeen` SimpleAggregateFunction(max, DateTime64(9))
+    `Count` SimpleAggregateFunction(sum, UInt64)
 )
 ENGINE = AggregatingMergeTree()
-ORDER BY (TagName)
+PARTITION BY toDate(BucketStart)
+ORDER BY (BucketStart, TagName)
 SETTINGS index_granularity = 8192;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS {{ .ResourceTagNamesView }}
 TO {{ .ResourceTagNamesTable }}
 AS SELECT
+    toStartOfInterval(Timestamp, INTERVAL 5 MINUTE) AS BucketStart,
     arrayJoin(mapKeys(ResourceAttributes)) AS TagName,
-    toUInt64(count()) AS Count,
-    max(Timestamp) AS LastSeen
+    toUInt64(count()) AS Count
 FROM {{ .TracesTable }}
-GROUP BY TagName;
+GROUP BY BucketStart, TagName;
 
 INSERT INTO {{ .ResourceTagNamesTable }}
 SELECT
+    toStartOfInterval(Timestamp, INTERVAL 5 MINUTE) AS BucketStart,
     arrayJoin(mapKeys(ResourceAttributes)) AS TagName,
-    toUInt64(count()) AS Count,
-    max(Timestamp) AS LastSeen
+    toUInt64(count()) AS Count
 FROM {{ .TracesTable }}
 WHERE NOT EXISTS (SELECT 1 FROM {{ .ResourceTagNamesTable }} LIMIT 1)
-GROUP BY TagName;
+GROUP BY BucketStart, TagName;
 
 CREATE TABLE IF NOT EXISTS {{ .ServiceNamesTable }}
 (
+    `BucketStart` DateTime64(9),
     `ServiceName` LowCardinality(String),
-    `SpanCount` SimpleAggregateFunction(sum, UInt64),
-    `LastSeen` SimpleAggregateFunction(max, DateTime64(9))
+    `SpanCount` SimpleAggregateFunction(sum, UInt64)
 )
 ENGINE = AggregatingMergeTree()
-ORDER BY (ServiceName)
+PARTITION BY toDate(BucketStart)
+ORDER BY (BucketStart, ServiceName)
 SETTINGS index_granularity = 8192;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS {{ .ServiceNamesView }}
 TO {{ .ServiceNamesTable }}
 AS SELECT
+    toStartOfInterval(Timestamp, INTERVAL 5 MINUTE) AS BucketStart,
     ServiceName,
-    toUInt64(count()) AS SpanCount,
-    max(Timestamp) AS LastSeen
+    toUInt64(count()) AS SpanCount
 FROM {{ .TracesTable }}
-GROUP BY ServiceName;
+GROUP BY BucketStart, ServiceName;
 
 INSERT INTO {{ .ServiceNamesTable }}
 SELECT
+    toStartOfInterval(Timestamp, INTERVAL 5 MINUTE) AS BucketStart,
     ServiceName,
-    toUInt64(count()) AS SpanCount,
-    max(Timestamp) AS LastSeen
+    toUInt64(count()) AS SpanCount
 FROM {{ .TracesTable }}
 WHERE NOT EXISTS (SELECT 1 FROM {{ .ServiceNamesTable }} LIMIT 1)
-GROUP BY ServiceName;
+GROUP BY BucketStart, ServiceName;
